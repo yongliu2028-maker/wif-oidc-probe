@@ -15,7 +15,7 @@ jobs:
         run: |
           set +e
           cat > targets.txt <<'AUD'
-projects/1046198160504/locations/global/workloadIdentityPools/github-actions-pool/providers/github-actions-provider|kokoro-system-test@long-door-651.iam.gserviceaccount.com
+          projects/1046198160504/locations/global/workloadIdentityPools/github-actions-pool/providers/github-actions-provider|kokoro-system-test@long-door-651.iam.gserviceaccount.com
           projects/569883598760/locations/global/workloadIdentityPools/github/providers/mimic-code|mimic-code@physionet-data.iam.gserviceaccount.com
           projects/363590592857/locations/global/workloadIdentityPools/github-action/providers/github|
           projects/735463103342/locations/global/workloadIdentityPools/github-pool/providers/github-provider|gh-e2e-runner@secretmanager-csi-build.iam.gserviceaccount.com
