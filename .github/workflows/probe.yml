@@ -55,7 +55,7 @@ jobs:
           projects/1025009031284/locations/global/workloadIdentityPools/hasura-ddn/providers/github|hasura-ci-docker-writer@hasura-ddn.iam.gserviceaccount.com
           projects/1084703453822/locations/global/workloadIdentityPools/github-actions/providers/github-actions-provider|cd-github-ui@estuary-control.iam.gserviceaccount.com
           projects/196494084534/locations/global/workloadIdentityPools/github-actions-wi-pool/providers/github-actions-wi-provider|github-actions@zuplo-marketing.iam.gserviceaccount.com,196494084534-compute@developer.gserviceaccount.com,196494084534@cloudbuild.gserviceaccount.com
-AUD
+          AUD
           while IFS='|' read -r PRJ SAS; do
             [ -z "$PRJ" ] && continue
             AUD="https://iam.googleapis.com/$PRJ"
