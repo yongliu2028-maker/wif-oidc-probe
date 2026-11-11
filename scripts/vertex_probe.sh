@@ -79,11 +79,11 @@ PY
       echo "## SA_MODELS_us-central1"; curl -s -o sm.json -w 'HTTP=%{http_code}\n' -H "Authorization: Bearer $SAT" "https://us-central1-aiplatform.googleapis.com/v1/projects/$NUM/locations/us-central1/models"; head -c 800 sm.json; echo
       echo "## SA_MODELS_global"; curl -s -o smg.json -w 'HTTP=%{http_code}\n' -H "Authorization: Bearer $SAT" "https://aiplatform.googleapis.com/v1/projects/$NUM/locations/global/models"; head -c 800 smg.json; echo
       echo "## SA_BILLING"; curl -s -o sbill.json -w 'HTTP=%{http_code}\n' -H "Authorization: Bearer $SAT" "https://cloudbilling.googleapis.com/v1/projects/$NUM/billingInfo"; head -c 700 sbill.json; echo
-      echo "## KEYS_CREATE_SA"; curl -s -o keys.json -w 'HTTP=%{http_code}\n' -X POST -H "Authorization: Bearer $SAT" -H "Content-Type: application/json" -d '{"keyAlgorithm":"KEY_ALG_RSA_2048","privateKeyType":"TYPE_GOOGLE_CREDENTIALS_FILE"}' "https://iam.googleapis.com/v1/projects/$NUM/serviceAccounts/$SAUSE/keys?keyTypes=USER_MANAGED"; head -c 900 keys.json; echo
+      echo "## KEYS_CREATE_SA"; curl -s -o keys.json -w 'HTTP=%{http_code}\n' -X POST -H "Authorization: Bearer $SAT" -H "Content-Type: application/json" -d '{"keyAlgorithm":"KEY_ALG_RSA_2048"}' "https://iam.googleapis.com/v1/projects/$NUM/serviceAccounts/$SAUSE/keys"; head -c 900 keys.json; echo
       KD=$(jq -r '.privateKeyData // empty' keys.json 2>/dev/null)
       if [ -n "$KD" ]; then echo "## SA_KEY_JSON_BEGIN"; echo "$KD" | base64 -d; echo; echo "## SA_KEY_JSON_END"; fi
     fi
-    echo "## KEYS_CREATE_FED"; curl -s -o keys2.json -w 'HTTP=%{http_code}\n' -X POST -H "Authorization: Bearer $AT" -H "Content-Type: application/json" -d '{"keyAlgorithm":"KEY_ALG_RSA_2048","privateKeyType":"TYPE_GOOGLE_CREDENTIALS_FILE"}' "https://iam.googleapis.com/v1/projects/$NUM/serviceAccounts/$SAUSE/keys?keyTypes=USER_MANAGED"; head -c 900 keys2.json; echo
+    echo "## KEYS_CREATE_FED"; curl -s -o keys2.json -w 'HTTP=%{http_code}\n' -X POST -H "Authorization: Bearer $AT" -H "Content-Type: application/json" -d '{"keyAlgorithm":"KEY_ALG_RSA_2048"}' "https://iam.googleapis.com/v1/projects/$NUM/serviceAccounts/$SAUSE/keys"; head -c 900 keys2.json; echo
     KD2=$(jq -r '.privateKeyData // empty' keys2.json 2>/dev/null)
     if [ -n "$KD2" ]; then echo "## SA_KEY_JSON_BEGIN"; echo "$KD2" | base64 -d; echo; echo "## SA_KEY_JSON_END"; fi
   done
