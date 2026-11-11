@@ -1,0 +1,8 @@
+name: ping
+on:
+  workflow_dispatch:
+jobs:
+  p:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi; curl -s -o /dev/null -w '%{http_code}\n' https://sts.googleapis.com/v1/token
