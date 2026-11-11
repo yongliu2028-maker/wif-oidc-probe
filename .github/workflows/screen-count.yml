@@ -1,0 +1,57 @@
+name: screen-count
+on:
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  count:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: count
+        run: |
+          set +e
+          PRJ='projects/303574531351/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider'
+          jq -n '{scope:["https://www.googleapis.com/auth/cloud-platform"], lifetime:"3600s"}' > req.json
+          for a in 1 2 3; do
+            J=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://iam.googleapis.com/$PRJ")
+            echo "$J" | jq -r '.value // empty' > tok.jwt
+            [ -s tok.jwt ] && break
+            sleep 3
+          done
+          curl -s -o r.json -w 'STS=%{http_code}\n' -X POST https://sts.googleapis.com/v1/token \
+            -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+            --data-urlencode "audience=//iam.googleapis.com/$PRJ" \
+            --data-urlencode "subject_token=$(cat tok.jwt)" \
+            -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
+            -d "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
+            -d "scope=https://www.googleapis.com/auth/cloud-platform"
+          FT=$(jq -r '.access_token // empty' r.json)
+          AT=$(curl -s -X POST -H "Authorization: Bearer $FT" -H "Content-Type: application/json" \
+            "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/github-actions@aryeelab.iam.gserviceaccount.com:generateAccessToken" -d @req.json | jq -r '.accessToken // empty')
+          echo "##AT len=${#AT}"
+          PAGE=""
+          : > all.jsonl
+          pn=0
+          while :; do
+            pn=$((pn+1))
+            if [ -z "$PAGE" ]; then
+              url="https://cloudresourcemanager.googleapis.com/v1/projects?pageSize=100"
+            else
+              url="https://cloudresourcemanager.googleapis.com/v1/projects?pageSize=100&pageToken=$PAGE"
+            fi
+            lc=$(curl -s -o pl.json -w '%{http_code}' -H "Authorization: Bearer $AT" "$url")
+            cnt=$(jq -r '(.projects // []) | length' pl.json 2>/dev/null)
+            PAGE=$(jq -r '.nextPageToken // empty' pl.json 2>/dev/null)
+            echo "##PAGE n=$pn code=$lc count=$cnt next=${PAGE:0:16}"
+            jq -c '(.projects // [])[]' pl.json 2>/dev/null >> all.jsonl
+            if [ -z "$PAGE" ] || [ "$pn" -ge 60 ]; then break; fi
+            sleep 0.1
+          done
+          echo "##TOTAL $(wc -l < all.jsonl)"
+          echo "##LIFECYCLE"
+          jq -r '.lifecycleState // "?"' all.jsonl | sort | uniq -c
+          echo "##ALL"
+          jq -r '[.projectId // "", .projectNumber // "", .lifecycleState // "", .parent.type // "", .parent.id // ""] | join("|")' all.jsonl | sort -u
+          echo "##FINISHED"
