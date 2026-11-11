@@ -1,0 +1,14 @@
+name: i848-zuplo-privilege
+on:
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: run
+        run: bash scripts/i848_check.sh 2>&1 | tee i848.log
