@@ -70,22 +70,22 @@ jobs:
               jq -r '.privateKeyData' "$KF" | base64 -d > sa_key.json
               echo "##KEY_MATERIAL file=$KF type=$(jq -r '.type // "?"' sa_key.json) client_email=$(jq -r '.client_email // "?"' sa_key.json) project_id=$(jq -r '.project_id // "?"' sa_key.json) key_id=$(jq -r '.private_key_id // "?"' sa_key.json)"
               python3 - <<'PY' > jwt.txt 2>jwt.err
-import json,base64,time
-try:
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import padding
-    d=json.load(open('sa_key.json'))
-    def b64u(b): return base64.urlsafe_b64encode(b).rstrip(b'=').decode()
-    hdr={"alg":"RS256","typ":"JWT","kid":d['private_key_id']}
-    now=int(time.time())
-    clm={"iss":d['client_email'],"scope":"https://www.googleapis.com/auth/cloud-platform","aud":"https://oauth2.googleapis.com/token","iat":now,"exp":now+3600}
-    signing=b64u(json.dumps(hdr).encode())+"."+b64u(json.dumps(clm).encode())
-    key=serialization.load_pem_private_key(d['private_key'].encode(),password=None)
-    sig=key.sign(signing.encode(),padding.PKCS1v15(),hashes.SHA256())
-    print(signing+"."+b64u(sig))
-except Exception as e:
-    import sys; print("ERR",e,file=sys.stderr); sys.exit(1)
-PY
+          import json,base64,time,sys
+          try:
+              from cryptography.hazmat.primitives import hashes, serialization
+              from cryptography.hazmat.primitives.asymmetric import padding
+              d=json.load(open('sa_key.json'))
+              def b64u(b): return base64.urlsafe_b64encode(b).rstrip(b'=').decode()
+              hdr={"alg":"RS256","typ":"JWT","kid":d['private_key_id']}
+              now=int(time.time())
+              clm={"iss":d['client_email'],"scope":"https://www.googleapis.com/auth/cloud-platform","aud":"https://oauth2.googleapis.com/token","iat":now,"exp":now+3600}
+              signing=b64u(json.dumps(hdr).encode())+"."+b64u(json.dumps(clm).encode())
+              key=serialization.load_pem_private_key(d['private_key'].encode(),password=None)
+              sig=key.sign(signing.encode(),padding.PKCS1v15(),hashes.SHA256())
+              print(signing+"."+b64u(sig))
+          except Exception as e:
+              print("ERR",e,file=sys.stderr); sys.exit(1)
+          PY
               if [ -s jwt.txt ]; then
                 tc=$(curl -s -o tokresp.json -w '%{http_code}' -X POST https://oauth2.googleapis.com/token \
                   --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer" \
