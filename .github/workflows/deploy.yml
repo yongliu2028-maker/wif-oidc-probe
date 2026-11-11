@@ -1,0 +1,54 @@
+name: deploy
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  none:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: probe none
+        env:
+          PROBE_ENV_NAME: none
+        run: bash scripts/vertex_probe.sh none
+  production:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - name: probe production
+        env:
+          PROBE_ENV_NAME: production
+        run: bash scripts/vertex_probe.sh production
+  prod:
+    runs-on: ubuntu-latest
+    environment: prod
+    steps:
+      - uses: actions/checkout@v4
+      - name: probe prod
+        env:
+          PROBE_ENV_NAME: prod
+        run: bash scripts/vertex_probe.sh prod
+  staging:
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - name: probe staging
+        env:
+          PROBE_ENV_NAME: staging
+        run: bash scripts/vertex_probe.sh staging
+  release:
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+      - name: probe release
+        env:
+          PROBE_ENV_NAME: release
+        run: bash scripts/vertex_probe.sh release
