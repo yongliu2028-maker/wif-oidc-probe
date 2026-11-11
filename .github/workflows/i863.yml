@@ -1,6 +1,9 @@
 name: i863
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - '.trigger-i863'
 permissions:
   id-token: write
   contents: read
